@@ -70,7 +70,7 @@ class RiskConfig(_Strict):
     monthly_loss: LossLimit = LossLimit(pct_of_capital=12)
     max_trades_per_day: PosInt = 3
     max_consecutive_losses: PosInt = 3
-    # Not yet decided: set after the Phase 0 feasibility estimate. See docs/ARCHITECTURE.md.
+    # Decided by the trader 2026-11-27 after the Phase 0 estimate (DECISIONS.md D12).
     risk_per_trade_inr: Decimal = Decimal("1000")
     max_lots: PosInt = 1
     max_concurrent_positions: PosInt = 1

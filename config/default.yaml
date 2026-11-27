@@ -9,7 +9,7 @@ risk:
   monthly_loss: {pct_of_capital: 12}
   max_trades_per_day: 3
   max_consecutive_losses: 3
-  # PROPOSED, not decided. Trader picks after reading docs/ARCHITECTURE.md section 7.
+  # Decided by the trader 2026-11-27 (DECISIONS.md D12): 2% of capital.
   risk_per_trade_inr: "1000"
   max_lots: 1
   max_concurrent_positions: 1

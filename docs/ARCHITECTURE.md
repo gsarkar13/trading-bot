@@ -181,7 +181,12 @@ Points where the brief is incomplete or where I see a risk:
 
 ---
 
-## 6. Open questions (your call)
+## 6. Open questions (answered 2026-11-27)
+
+Answers: **Q1 $7 plan, Q2 ₹1,000**; Q3–Q7 and proposals P1–P7 take the defaults below
+(Q3 yes, Q4 assume Standard, Q5 `next_weekly`, Q6 same Telegram chat, Q7 across days).
+See DECISIONS.md D12, D13, D19, D22–D26.
+
 
 - **Q1. Server plan:** (a) Lightsail **$7/month, 1 GB** (recommended); (b) $5/month,
   0.5 GB, with swap and the recorder moved to the laptop; this is fragile and I don't

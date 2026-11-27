@@ -42,13 +42,14 @@ layers + baseline + HTML report, STRATEGY_GUIDE.md.
 
 ## Things only the trader can do (brief section 23), current list
 - [x] Create the private GitHub repo and attach it to the session
-- [ ] Answer ARCHITECTURE.md section 6, Q1–Q7 (server plan, risk per trade, P5, Fyers plan, NIFTY expiry day, arming factor, loss-streak reset)
+- [x] Answer ARCHITECTURE.md section 6, Q1–Q7 (2026-11-27: $7 plan, ₹1,000 risk, defaults for the rest)
+- [ ] Tell me if your Fyers account is on the Prime plan (I assume Standard until then)
 - [ ] Merge the Phase 0 PR to sign off
 - [ ] Create the Fyers API app (data now; App Type 200 + static IP later); put keys in `.env`
 - [ ] Phase 1: run the backfill and backtest commands I give you; run the recorder for one full session
 - [ ] Create a Telegram bot with @BotFather (Phase 2)
 - [ ] Get AI keys if wanted (Phase 2)
-- [ ] AWS: sign up with UPI, create Lightsail instance (plan per Q1), attach static IP, billing alert; upgrade to Paid before month 5 (Phase 3)
+- [ ] AWS: sign up with UPI, create Lightsail instance ($7/month, 1 GB plan), attach static IP, billing alert; upgrade to Paid before month 5 (Phase 3)
 - [ ] Create the Flattrade API key with the static IP; register the same IP with Fyers (Phase 3)
 - [ ] Save Flattrade Pi doc pages and attach them (Phase 3)
 - [ ] Tailscale on server and phone (Phase 3)
