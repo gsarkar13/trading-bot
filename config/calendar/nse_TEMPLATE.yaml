@@ -1,0 +1,7 @@
+year: 2027
+source_circular: "NSE/CMTR/xxxxx dated yyyy-mm-dd"   # fill in
+verified_by: ""                                       # your name + date checked
+holidays:            # equity & equity-derivatives trading holidays (weekdays only)
+  # - {date: "2027-01-26", name: "Republic Day"}
+special_sessions:    # trading on a normally closed day, or changed hours
+  # - {date: "2027-11-08", name: "Muhurat trading", open: "18:00", close: "19:00"}

@@ -49,3 +49,6 @@ frontend/node_modules/
 Thumbs.db
 .idea/
 .vscode/
+
+# --- Per-host config (instance id, role, registered IP); not secret but host-specific ---
+config/host.yaml
