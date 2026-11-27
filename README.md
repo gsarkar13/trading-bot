@@ -38,9 +38,10 @@ pytest
 
 ## Database
 ```bash
-alembic upgrade head
+python -m app.tools.init_db
 ```
-Creates `data/platform.db` (SQLite, WAL mode). Ignored by git.
+Creates or upgrades `data/platform.db` (SQLite, WAL mode; ignored by git) and fills the
+strategies table. Safe to run again: it never overwrites your edits.
 
 ## Tools available now
 ```bash

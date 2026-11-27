@@ -51,7 +51,7 @@ class InstanceRole(StrEnum):
 class Product(StrEnum):
     MIS = "MIS"  # intraday, squared off by the time guard
     CNC = "CNC"  # delivery, held across days
-    NRML = "NRML"  # F&O carry-forward; not used for entries in this build
+    NRML = "NRML"  # may appear in broker positions (e.g. manual trades); never sent by us
 
 
 class Side(StrEnum):
@@ -64,6 +64,33 @@ class OrderType(StrEnum):
 
     LMT = "LMT"
     SL_LMT = "SL-LMT"
+
+
+class OrderStatus(StrEnum):
+    """Our record of one order intent (table `orders.status`)."""
+
+    NEW = "NEW"  # stored with its tag, not yet sent (invariant 5)
+    SENT = "SENT"  # sent, no answer yet
+    UNCERTAIN = "UNCERTAIN"  # timeout / error: look up the tag before anything else
+    PENDING = "PENDING"  # resting at the broker
+    TRIGGER_PENDING = "TRIGGER_PENDING"  # SL-LMT waiting for its trigger
+    PARTIAL = "PARTIAL"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+
+
+WORKING_ORDER_STATUSES: tuple[OrderStatus, ...] = (
+    OrderStatus.NEW,
+    OrderStatus.SENT,
+    OrderStatus.UNCERTAIN,  # might be live at the broker, so it counts as working
+    OrderStatus.PENDING,
+    OrderStatus.TRIGGER_PENDING,
+    OrderStatus.PARTIAL,
+)
+
+# Purposes of orders that sell an open long. Invariant 2: at most one may be working.
+EXIT_PURPOSES: tuple[str, ...] = ("PROTECT", "EXIT", "FLATTEN")
 
 
 class OptionType(StrEnum):
@@ -108,11 +135,6 @@ class PositionState(StrEnum):
     SEMI_TASK_SENT = "SEMI_TASK_SENT"
     SELF_REPORTED = "SELF_REPORTED"
     ERROR = "ERROR"
-
-
-class Exchange(StrEnum):
-    NSE = "NSE"
-    NFO = "NFO"  # NSE derivatives segment
 
 
 class InstrumentKey(BaseModel):

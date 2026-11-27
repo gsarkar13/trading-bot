@@ -55,3 +55,21 @@ def canonical_json(obj: BaseModel | Mapping[str, Any]) -> str:
 def config_hash(obj: BaseModel | Mapping[str, Any]) -> str:
     """Short SHA-256 of the canonical JSON. Stored with every signal and trade (section 7)."""
     return hashlib.sha256(canonical_json(obj).encode("utf-8")).hexdigest()[:16]
+
+
+# Config sections, besides the strategy's own params, that change what a trade looks like.
+TRADE_SHAPING_SECTIONS = ("risk", "contracts", "time_guards", "execution", "freshness")
+
+
+def trade_config_hash(cfg: PlatformConfig, strategy_id: str) -> str:
+    """Hash stored with every signal and trade (brief section 7).
+
+    Covers the strategy's params *and* the sizing, contract, time-guard, execution and
+    freshness settings, so two trades with different risk_per_trade never share a hash.
+    """
+    body = {
+        "strategy_id": strategy_id,
+        "params": cfg.strategy_params(strategy_id).model_dump(mode="json"),
+        **{sec: getattr(cfg, sec).model_dump(mode="json") for sec in TRADE_SHAPING_SECTIONS},
+    }
+    return config_hash(body)

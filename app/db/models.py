@@ -18,6 +18,7 @@ from decimal import Decimal
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     ForeignKey,
     Index,
@@ -25,10 +26,21 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.core.types import EXIT_PURPOSES, WORKING_ORDER_STATUSES, OrderStatus
 from app.db.types import ExactDecimal, UTCDateTime
+
+
+def _sql_in(values: tuple[str, ...]) -> str:
+    return "(" + ", ".join(f"'{v}'" for v in values) + ")"
+
+
+_WORKING = _sql_in(tuple(s.value for s in WORKING_ORDER_STATUSES))
+_EXITS = _sql_in(EXIT_PURPOSES)
+_ALL_STATUSES = _sql_in(tuple(s.value for s in OrderStatus))
 
 
 class Base(DeclarativeBase):
@@ -193,7 +205,7 @@ class SignalRow(Base):
     instance_id: Mapped[str] = mapped_column(String(4))
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, index=True)
     underlying: Mapped[str] = mapped_column(String(30))
-    direction: Mapped[str] = mapped_column(String(5))  # LONG_CE / LONG_PE / LONG
+    direction: Mapped[str] = mapped_column(String(10))  # LONG_CE / LONG_PE / LONG
     inputs: Mapped[dict[str, object]] = mapped_column(JSON)  # full input snapshot
     checklist: Mapped[dict[str, object]] = mapped_column(JSON)  # each item's result
     outcome: Mapped[str] = mapped_column(String(20))  # TAKEN / SUPERSEDED / SKIPPED_* / ...
@@ -225,6 +237,7 @@ class Position(Base):
     instance_id: Mapped[str] = mapped_column(String(4))
     book: Mapped[str] = mapped_column(String(30), index=True)  # PAPER / REAL / shadow:X
     mode: Mapped[str] = mapped_column(String(5))  # mode the position was opened in
+    broker: Mapped[str] = mapped_column(String(20))  # paper / semi / flattrade / fyers
     strategy_id: Mapped[str | None] = mapped_column(String(60))  # None if UNMANAGED
     signal_uid: Mapped[str | None] = mapped_column(String(40))
     instrument_key: Mapped[str] = mapped_column(String(80))
@@ -239,6 +252,8 @@ class Position(Base):
     closed_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
     self_reported: Mapped[bool] = mapped_column(Boolean, default=False)
     config_hash: Mapped[str | None] = mapped_column(String(16))
+    # Invariant 1: never net short. A position's open quantity cannot go below zero.
+    __table_args__ = (CheckConstraint("qty_open >= 0", name="ck_positions_never_short"),)
 
 
 class Order(Base):
@@ -265,6 +280,20 @@ class Order(Base):
     filled_qty: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
     updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
+    __table_args__ = (
+        CheckConstraint("order_type IN ('LMT', 'SL-LMT')", name="ck_orders_limit_types_only"),
+        CheckConstraint("side IN ('BUY', 'SELL')", name="ck_orders_side"),
+        CheckConstraint(f"status IN {_ALL_STATUSES}", name="ck_orders_status"),
+        CheckConstraint("qty > 0 AND filled_qty >= 0 AND filled_qty <= qty", name="ck_orders_qty"),
+        # Invariant 2: at most one working exit-side order per position.
+        Index(
+            "uq_orders_one_working_exit",
+            "position_uid",
+            unique=True,
+            sqlite_where=text(f"purpose IN {_EXITS} AND status IN {_WORKING}"),
+            postgresql_where=text(f"purpose IN {_EXITS} AND status IN {_WORKING}"),
+        ),
+    )
 
 
 class OrderEvent(Base):
@@ -284,7 +313,9 @@ class Fill(Base):
     __tablename__ = "fills"
     id: Mapped[int] = _pk()
     client_tag: Mapped[str] = mapped_column(ForeignKey("orders.client_tag"), index=True)
-    broker_trade_id: Mapped[str | None] = mapped_column(String(40))
+    # Always set: the broker's trade id, or "PAPER-<n>" / "SELF-<task_uid>" for paper and
+    # self-reported fills, so the unique key below also de-duplicates those.
+    broker_trade_id: Mapped[str] = mapped_column(String(40))
     at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
     qty: Mapped[int] = mapped_column(Integer)
     price: Mapped[Decimal] = mapped_column(ExactDecimal)
@@ -349,7 +380,9 @@ class RiskState(Base):
     __tablename__ = "risk_state"
     id: Mapped[int] = _pk()
     book: Mapped[str] = mapped_column(String(30))
-    period: Mapped[str] = mapped_column(String(5))  # day / week / month
+    # day / week / month, or "streak": one row per losing streak (period_start = first loss).
+    # A streak spans days; it ends on a win or a logged manual reset (DECISIONS.md D19).
+    period: Mapped[str] = mapped_column(String(6))
     period_start: Mapped[dt.date] = mapped_column(Date)
     realized_pnl: Mapped[Decimal] = mapped_column(ExactDecimal, default=Decimal(0))
     worst_unrealized_pnl: Mapped[Decimal] = mapped_column(ExactDecimal, default=Decimal(0))
@@ -359,6 +392,8 @@ class RiskState(Base):
     tripped_reason: Mapped[str | None] = mapped_column(Text)
     tripped_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
     reset_override_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime)
+    reset_override_by: Mapped[str | None] = mapped_column(String(40))  # dashboard / telegram
+    reset_override_reason: Mapped[str | None] = mapped_column(Text)  # typed confirmation
     updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
     __table_args__ = (UniqueConstraint("book", "period", "period_start"),)
 

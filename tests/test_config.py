@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from app.config.loader import DEFAULT_FILES, config_hash, load_config
+from app.config.loader import DEFAULT_FILES, config_hash, load_config, trade_config_hash
 from app.config.schema import (
     DashboardConfig,
     Ema200HammerParams,
@@ -87,7 +87,9 @@ def test_semi_request_needs_allow_semi() -> None:
 
 def test_duplicate_strategy_ids_rejected() -> None:
     with pytest.raises(ValidationError):
-        PlatformConfig.model_validate({"strategies": [{"id": "a"}, {"id": "a"}]})
+        PlatformConfig.model_validate(
+            {"strategies": [{"id": "pdh_pdl_breakout"}, {"id": "pdh_pdl_breakout"}]}
+        )
 
 
 def test_instance_id_format_enforced() -> None:
@@ -107,3 +109,42 @@ def test_secrets_never_shown() -> None:
     s = Secrets(fyers_app_secret=SecretStr("super-secret-value-123"))
     assert "super-secret" not in repr(s) and "super-secret" not in str(s)
     assert "fyers_app_secret" in repr(s)
+
+
+def test_strategy_params_typo_rejected() -> None:
+    with pytest.raises(ValidationError, match="rvol_treshold"):
+        PlatformConfig.model_validate(
+            {"strategies": [{"id": "ema200_hammer_rvol_oi", "params": {"rvol_treshold": 2}}]}
+        )
+
+
+def test_unknown_strategy_and_placeholder_params_rejected() -> None:
+    with pytest.raises(ValidationError, match="no strategies-table row"):
+        PlatformConfig.model_validate({"strategies": [{"id": "my_new_idea"}]})
+    with pytest.raises(ValidationError, match="placeholder takes no params"):
+        PlatformConfig.model_validate({"strategies": [{"id": "orb", "params": {"x": 1}}]})
+
+
+def test_options_strategy_cannot_fall_back_to_semi() -> None:
+    with pytest.raises(ValidationError, match="semi_fallback"):
+        PlatformConfig.model_validate(
+            {"strategies": [{"id": "pdh_pdl_breakout", "semi_fallback": True}]}
+        )
+    # A stock strategy may (invariant 14).
+    PlatformConfig.model_validate({"strategies": [{"id": "swing_pullback", "semi_fallback": True}]})
+
+
+def test_trade_config_hash_covers_risk_and_params() -> None:
+    base = load_config((DEFAULT_FILES[0],))
+    h = trade_config_hash(base, "pdh_pdl_breakout")
+    data = base.model_dump(mode="json")
+    data["risk"]["risk_per_trade_inr"] = "1500"
+    assert trade_config_hash(PlatformConfig.model_validate(data), "pdh_pdl_breakout") != h
+    data = base.model_dump(mode="json")
+    data["strategies"][1]["params"] = {"trend_filter_enabled": True}
+    assert trade_config_hash(PlatformConfig.model_validate(data), "pdh_pdl_breakout") != h
+    # Settings that don't shape a trade (e.g. Telegram) don't change it.
+    data = base.model_dump(mode="json")
+    data["telegram"]["mute_paper_trade_alerts"] = True
+    assert trade_config_hash(PlatformConfig.model_validate(data), "pdh_pdl_breakout") == h
+    assert trade_config_hash(base, "ema200_hammer_rvol_oi") != h

@@ -5,8 +5,6 @@ import subprocess
 from app.config.loader import REPO_ROOT
 from app.core.scrub import find_secrets, redact
 
-ALLOW = {".env.example"}  # placeholders only; still scanned below for real values
-
 
 def _repo_files() -> list[str]:
     out = subprocess.run(
@@ -28,8 +26,7 @@ def test_no_token_like_strings_in_repo() -> None:
         hits = find_secrets(p.read_text(encoding="utf-8", errors="ignore"))
         if hits:
             offenders[rel] = hits
-    assert not offenders, offenders
-    assert ALLOW  # .env.example is scanned too, and must contain no values
+    assert not offenders, offenders  # .env.example is scanned too
 
 
 def test_env_and_vault_are_ignored() -> None:
@@ -44,7 +41,26 @@ def test_detector_catches_known_shapes() -> None:
     jwt = "eyJ" + "a" * 20 + "." + "b" * 20 + "." + "c" * 10
     tg = "1234567890:" + "A" * 35
     assigned = "access_token = " + "Z9" * 15
-    for sample in (jwt, tg, "sk-ant-" + "x" * 30, "AIza" + "q" * 35, assigned):
+    env_lines = [
+        "ALGO_FYERS_APP_SECRET=" + "a1" * 12,
+        "api_secret=" + "b2" * 12,
+        "ALGO_TELEGRAM_BOT_TOKEN=" + "c3" * 12,
+        '{"jKey": "' + "d4" * 12 + '"}',
+        "appIdHash: " + "e5" * 12,
+    ]
+    sha256_hex = "f0" * 32
+    for sample in (
+        jwt,
+        tg,
+        "sk-ant-" + "x" * 30,
+        "AIza" + "q" * 35,
+        assigned,
+        sha256_hex,
+        *env_lines,
+    ):
         assert find_secrets(sample), sample
         assert "[REDACTED]" in redact(sample)
-    assert not find_secrets("config_hash = 0123456789abcdef")  # 16 chars: not flagged
+    # Things that must NOT be flagged: short hashes, empty example values, type hints.
+    assert not find_secrets("config_hash = 0123456789abcdef")
+    assert not find_secrets("ALGO_FYERS_APP_SECRET=")
+    assert not find_secrets("fyers_app_secret: SecretStr | None = None")

@@ -2,7 +2,7 @@
 
 Revision ID: 0001
 Revises:
-Create Date: 2026-11-27 11:41:16.975154
+Create Date: 2026-11-27 11:55:28.960882
 """
 
 from collections.abc import Sequence
@@ -188,6 +188,7 @@ def upgrade() -> None:
         sa.Column("instance_id", sa.String(length=4), nullable=False),
         sa.Column("book", sa.String(length=30), nullable=False),
         sa.Column("mode", sa.String(length=5), nullable=False),
+        sa.Column("broker", sa.String(length=20), nullable=False),
         sa.Column("strategy_id", sa.String(length=60), nullable=True),
         sa.Column("signal_uid", sa.String(length=40), nullable=True),
         sa.Column("instrument_key", sa.String(length=80), nullable=False),
@@ -202,6 +203,7 @@ def upgrade() -> None:
         sa.Column("closed_at", app.db.types.UTCDateTime(), nullable=True),
         sa.Column("self_reported", sa.Boolean(), nullable=False),
         sa.Column("config_hash", sa.String(length=16), nullable=True),
+        sa.CheckConstraint("qty_open >= 0", name="ck_positions_never_short"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("position_uid"),
     )
@@ -213,7 +215,7 @@ def upgrade() -> None:
         "risk_state",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("book", sa.String(length=30), nullable=False),
-        sa.Column("period", sa.String(length=5), nullable=False),
+        sa.Column("period", sa.String(length=6), nullable=False),
         sa.Column("period_start", sa.Date(), nullable=False),
         sa.Column("realized_pnl", app.db.types.ExactDecimal(length=40), nullable=False),
         sa.Column("worst_unrealized_pnl", app.db.types.ExactDecimal(length=40), nullable=False),
@@ -223,6 +225,8 @@ def upgrade() -> None:
         sa.Column("tripped_reason", sa.Text(), nullable=True),
         sa.Column("tripped_at", app.db.types.UTCDateTime(), nullable=True),
         sa.Column("reset_override_at", app.db.types.UTCDateTime(), nullable=True),
+        sa.Column("reset_override_by", sa.String(length=40), nullable=True),
+        sa.Column("reset_override_reason", sa.Text(), nullable=True),
         sa.Column("updated_at", app.db.types.UTCDateTime(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("book", "period", "period_start"),
@@ -236,7 +240,7 @@ def upgrade() -> None:
         sa.Column("instance_id", sa.String(length=4), nullable=False),
         sa.Column("created_at", app.db.types.UTCDateTime(), nullable=False),
         sa.Column("underlying", sa.String(length=30), nullable=False),
-        sa.Column("direction", sa.String(length=5), nullable=False),
+        sa.Column("direction", sa.String(length=10), nullable=False),
         sa.Column("inputs", sa.JSON(), nullable=False),
         sa.Column("checklist", sa.JSON(), nullable=False),
         sa.Column("outcome", sa.String(length=20), nullable=False),
@@ -345,6 +349,15 @@ def upgrade() -> None:
         sa.Column("filled_qty", sa.Integer(), nullable=False),
         sa.Column("created_at", app.db.types.UTCDateTime(), nullable=False),
         sa.Column("updated_at", app.db.types.UTCDateTime(), nullable=False),
+        sa.CheckConstraint("order_type IN ('LMT', 'SL-LMT')", name="ck_orders_limit_types_only"),
+        sa.CheckConstraint("side IN ('BUY', 'SELL')", name="ck_orders_side"),
+        sa.CheckConstraint(
+            "status IN ('NEW', 'SENT', 'UNCERTAIN', 'PENDING', 'TRIGGER_PENDING', 'PARTIAL', 'FILLED', 'CANCELLED', 'REJECTED')",
+            name="ck_orders_status",
+        ),
+        sa.CheckConstraint(
+            "qty > 0 AND filled_qty >= 0 AND filled_qty <= qty", name="ck_orders_qty"
+        ),
         sa.ForeignKeyConstraint(
             ["position_uid"],
             ["positions.position_uid"],
@@ -355,6 +368,17 @@ def upgrade() -> None:
     with op.batch_alter_table("orders", schema=None) as batch_op:
         batch_op.create_index(
             batch_op.f("ix_orders_broker_order_id"), ["broker_order_id"], unique=False
+        )
+        batch_op.create_index(
+            "uq_orders_one_working_exit",
+            ["position_uid"],
+            unique=True,
+            sqlite_where=sa.text(
+                "purpose IN ('PROTECT', 'EXIT', 'FLATTEN') AND status IN ('NEW', 'SENT', 'UNCERTAIN', 'PENDING', 'TRIGGER_PENDING', 'PARTIAL')"
+            ),
+            postgresql_where=sa.text(
+                "purpose IN ('PROTECT', 'EXIT', 'FLATTEN') AND status IN ('NEW', 'SENT', 'UNCERTAIN', 'PENDING', 'TRIGGER_PENDING', 'PARTIAL')"
+            ),
         )
 
     op.create_table(
@@ -446,7 +470,7 @@ def upgrade() -> None:
         "fills",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("client_tag", sa.String(length=30), nullable=False),
-        sa.Column("broker_trade_id", sa.String(length=40), nullable=True),
+        sa.Column("broker_trade_id", sa.String(length=40), nullable=False),
         sa.Column("at", app.db.types.UTCDateTime(), nullable=False),
         sa.Column("qty", sa.Integer(), nullable=False),
         sa.Column("price", app.db.types.ExactDecimal(length=40), nullable=False),
@@ -503,6 +527,15 @@ def downgrade() -> None:
     op.drop_table("strategy_gate_reports")
     op.drop_table("semi_tasks")
     with op.batch_alter_table("orders", schema=None) as batch_op:
+        batch_op.drop_index(
+            "uq_orders_one_working_exit",
+            sqlite_where=sa.text(
+                "purpose IN ('PROTECT', 'EXIT', 'FLATTEN') AND status IN ('NEW', 'SENT', 'UNCERTAIN', 'PENDING', 'TRIGGER_PENDING', 'PARTIAL')"
+            ),
+            postgresql_where=sa.text(
+                "purpose IN ('PROTECT', 'EXIT', 'FLATTEN') AND status IN ('NEW', 'SENT', 'UNCERTAIN', 'PENDING', 'TRIGGER_PENDING', 'PARTIAL')"
+            ),
+        )
         batch_op.drop_index(batch_op.f("ix_orders_broker_order_id"))
 
     op.drop_table("orders")

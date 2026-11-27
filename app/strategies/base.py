@@ -15,7 +15,6 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from app.config.loader import config_hash
 from app.core.types import Segment
 
 
@@ -81,11 +80,13 @@ class StrategyPlugin(abc.ABC):
     segment: ClassVar[Segment]
     params_model: ClassVar[type[BaseModel]]
 
-    def __init__(self, params: BaseModel) -> None:
+    def __init__(self, params: BaseModel, config_hash: str) -> None:
+        """`config_hash` is the engine's `trade_config_hash` (params + risk + contracts +
+        time guards + execution + freshness); the plugin copies it into every Signal."""
         if not isinstance(params, self.params_model):
             raise TypeError(f"{self.id}: params must be {self.params_model.__name__}")
         self.params = params
-        self.config_hash = config_hash(params)
+        self.config_hash = config_hash
 
     @classmethod
     @abc.abstractmethod

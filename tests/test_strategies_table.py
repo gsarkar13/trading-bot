@@ -77,7 +77,7 @@ def test_registering_a_plugin_makes_it_implemented(monkeypatch: pytest.MonkeyPat
     registry.register(_Dummy)
     assert registry.code_status("pdh_pdl_breakout") is CodeStatus.IMPLEMENTED
     assert registry.can_activate("pdh_pdl_breakout") == (True, "ok")
-    plugin = _Dummy(PdhPdlParams())
+    plugin = _Dummy(PdhPdlParams(), config_hash="abcd1234abcd1234")
     sig = plugin.on_candle(
         "1m", MarketView(underlying="NIFTY", now=dt.datetime(2026, 11, 27, tzinfo=dt.UTC), data={})
     )[0]
@@ -98,4 +98,21 @@ def test_plugin_rejects_wrong_params_type() -> None:
     from app.config.schema import Ema200HammerParams
 
     with pytest.raises(TypeError):
-        _Dummy(Ema200HammerParams())
+        _Dummy(Ema200HammerParams(), config_hash="x")
+
+
+def test_params_models_cover_exactly_the_implemented_strategies() -> None:
+    from app.config.schema import STRATEGY_PARAMS
+
+    planned = {r.id for r in registry.SEED_ROWS if r.target_code_status is CodeStatus.IMPLEMENTED}
+    assert set(STRATEGY_PARAMS) == planned
+
+
+def test_plugin_segment_must_match_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(registry, "_REGISTRY", {})
+
+    class WrongSegment(_Dummy):
+        segment: ClassVar[Segment] = Segment.STOCK
+
+    with pytest.raises(ValueError, match="segment"):
+        registry.register(WrongSegment)

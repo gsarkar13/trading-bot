@@ -196,6 +196,8 @@ Points where the brief is incomplete or where I see a risk:
   Tuesday). The alternative is `skip` (no NIFTY entries on expiry day).
 - **Q6. Arming second factor:** code sent in the same Telegram chat (brief), or shown on
   the dashboard and typed into Telegram (slightly stronger, one more step each morning)?
+- **Q7. Consecutive-loss breaker:** does the streak of 3 losses reset each morning, or
+  run across days until a win? Default: across days (stricter).
 
 ---
 
@@ -303,7 +305,9 @@ adds value.
 ## 9. Memory budget plan (1 GB server)
 
 **Measured here** (Python 3.13, Linux, peak RSS right after import; command in
-PROGRESS.md):
+PROGRESS.md). The independent reviewer measured the same imports on Python 3.12 at
+39 / 53 / 65 / 97 MB, so on the server's Python version the numbers are 5–20% lower and
+pandas adds ~32 MB. I use the higher 3.13 numbers for budgeting.
 
 | Imports | Peak RSS |
 |---|---|
@@ -368,9 +372,13 @@ processing latency unpredictable exactly when the market is busy.
   the data feed and the execution adapter (section 14.1). The strategy, risk and state
   machine code is shared.
 - **Package layout:** `app/core` (types, tags, scrubbing), `app/config` (schema, loader,
-  secrets), `app/db` (models, migrations), `app/adapters` (interfaces, router; broker
-  adapters in later phases), `app/strategies` (plugin interface, registry, plugins),
-  `app/tools` (CLIs: sizing estimate now; backfill, flatten later).
+  secrets), `app/db` (models, migrations, strategies-table seeding), `app/adapters`
+  (interfaces, router; broker adapters in later phases), `app/strategies` (plugin
+  interface, seed rows, registry, plugins), `app/tools` (CLIs: `init_db` and
+  `sizing_estimate` now; backfill, flatten later).
+- **Config hash:** every signal and trade stores `trade_config_hash`, which covers the
+  strategy's params *and* the risk, contract, time-guard, execution and freshness
+  settings (`app/config/loader.py`).
 - **Frontend:** React + Vite + TypeScript, built to static files. Decision on how built
   files reach the server is in DECISIONS.md (D8).
 
@@ -378,11 +386,11 @@ processing latency unpredictable exactly when the market is busy.
 
 | Inv. | Where it will be enforced | Phase |
 |---|---|---|
-| 1 no short | risk layer pre-send check using broker-confirmed long qty | 2 |
-| 2 one exit order | state machine; P2 modify-to-exit | 2/3 |
+| 1 no short | risk layer pre-send check using broker-confirmed long qty; DB check `qty_open >= 0` (done) | 0/2 |
+| 2 one exit order | state machine; P2 modify-to-exit; DB partial unique index, one working exit per position (done, property-tested) | 0/2/3 |
 | 3 protect in N s | state machine timer after fill | 2 |
 | 4 gap-skipped stop | stop monitor; `execution.gap_chase_*` config | 2 |
-| 5 exactly-once | `app/core/tags.py` (done), `orders.client_tag` unique (done), tag lookup before retry (`find_by_tag`, done in interface) | 0/2 |
+| 5 exactly-once | `app/core/tags.py` (done), `orders.client_tag` unique (done), `OrderRequest` rejects non-conforming tags (done), tag lookup before retry (`find_by_tag`, done in interface) | 0/2 |
 | 6 fail closed | freshness guards config (done), data-health gate | 1/2 |
 | 7 restart rebuild | startup reconciliation | 2/3 |
 | 8 breakers persist | `risk_state` table (done), breaker logic | 0/2 |
@@ -391,7 +399,7 @@ processing latency unpredictable exactly when the market is busy.
 | 11 flatten | UI, watchdog, `app.tools.flatten` | 2/3 |
 | 12 rate limits | token buckets per adapter; `rate_limits` config (done, order cap < 10/s validated) | 1/2 |
 | 13 time guards | `time_guards` config (done, ordering validated) | 2 |
-| 14 no silent downgrade | mode resolver + alerts; router refuses execution failover (done) | 2 |
+| 14 no silent downgrade | mode resolver + alerts; router refuses execution failover (done); config rejects `semi_fallback` on options strategies (done) | 0/2 |
 | 15 SEMI verified | `semi_tasks` table (done), SEMI broker | 2 |
 | 16 one instance | instance id in tags (done), `is_foreign` (done), periodic order-book scan | 0/2 |
 | 17 no change while exposed | strategy table service | 2 |

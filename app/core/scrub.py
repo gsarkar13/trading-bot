@@ -16,10 +16,14 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "google_api_key": re.compile(r"AIza[0-9A-Za-z_-]{35}"),
     "aws_access_key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     "private_key_block": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    # Any identifier containing a secret-ish word, e.g. api_secret=, ALGO_FYERS_APP_SECRET=,
+    # "access_token": ... (no word boundary, so prefixes like ALGO_ and api_ are caught).
     "assigned_secret": re.compile(
-        r"(?i)\b(?:secret|token|api[_-]?key|password|passphrase|access[_-]?token|jkey|appidhash)"
-        r"\b[\"']?\s*[:=]\s*[\"']?([A-Za-z0-9/+_.-]{20,})"
+        r"(?i)[A-Za-z0-9_]*(?:secret|token|api[_-]?key|password|passphrase|jkey|appidhash)"
+        r"[A-Za-z0-9_]*[\"']?[ \t]*[:=][ \t]*[\"']?([A-Za-z0-9/+_.-]{20,})"
     ),
+    # Bare long hex: SHA-256 hashes such as Flattrade's api_secret hash or Fyers appIdHash.
+    "long_hex": re.compile(r"\b[0-9a-fA-F]{48,}\b"),
 }
 
 

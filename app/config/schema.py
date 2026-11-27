@@ -17,6 +17,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.types import InstanceRole, Mode, Segment
+from app.strategies.seed import seed_row
 
 Pct = Annotated[float, Field(ge=0, le=100)]
 PosInt = Annotated[int, Field(gt=0)]
@@ -207,6 +208,13 @@ class PdhPdlParams(_Strict):
     target_rr: Annotated[float, Field(gt=0)] = 2.0
 
 
+# Params model for each implemented strategy id. Placeholders have none.
+STRATEGY_PARAMS: dict[str, type[BaseModel]] = {
+    "ema200_hammer_rvol_oi": Ema200HammerParams,
+    "pdh_pdl_breakout": PdhPdlParams,
+}
+
+
 class StrategyEntry(_Strict):
     """One config block per strategy. `params` is validated by the plugin's own schema."""
 
@@ -324,6 +332,19 @@ class PlatformConfig(_Strict):
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate strategy id in config")
         for s in self.strategies:
+            row = seed_row(s.id)
+            if row is None:
+                raise ValueError(f"strategy {s.id!r} has no strategies-table row")
+            # A typo in a parameter name must fail loudly, never fall back to a default.
+            model = STRATEGY_PARAMS.get(s.id)
+            if model is None:
+                if s.params:
+                    raise ValueError(f"strategy {s.id}: placeholder takes no params")
+            else:
+                model.model_validate(s.params)
+            # Invariant 14: options strategies never fall back to SEMI entries.
+            if row.segment is Segment.OPTIONS and s.semi_fallback:
+                raise ValueError(f"strategy {s.id}: semi_fallback is not allowed for options")
             # Invariant 10: every restart comes up in PAPER. The *requested* mode may be
             # stored; the effective mode is resolved at runtime. Here we only forbid SEMI
             # requests for strategies that disallow it.
@@ -335,8 +356,7 @@ class PlatformConfig(_Strict):
                 raise ValueError("segment allocation exceeds capital")
         return self
 
-
-SEGMENT_OF_PARAMS: dict[type[BaseModel], Segment] = {
-    Ema200HammerParams: Segment.OPTIONS,
-    PdhPdlParams: Segment.OPTIONS,
-}
+    def strategy_params(self, strategy_id: str) -> BaseModel:
+        """The validated params model (all defaults filled in) for one strategy."""
+        entry = next(s for s in self.strategies if s.id == strategy_id)
+        return STRATEGY_PARAMS[strategy_id].model_validate(entry.params)

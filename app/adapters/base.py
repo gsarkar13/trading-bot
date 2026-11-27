@@ -18,8 +18,9 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.core.tags import parse_tag
 from app.core.types import InstrumentKey, OptionType, OrderType, Product, Side
 
 
@@ -93,7 +94,9 @@ class ChainSnapshot(_Frozen):
 
 
 class OrderRequest(_Frozen):
-    client_tag: str = Field(pattern=r"^[A-Za-z0-9]{1,20}$")
+    """An order intent. Validation here is the last check before any adapter sees it."""
+
+    client_tag: str
     key: InstrumentKey
     side: Side
     qty: int = Field(gt=0)
@@ -101,6 +104,26 @@ class OrderRequest(_Frozen):
     limit_price: Decimal = Field(gt=0)
     trigger_price: Decimal | None = None
     product: Product
+
+    @model_validator(mode="after")
+    def _check(self) -> OrderRequest:
+        if parse_tag(self.client_tag) is None:  # invariants 5 and 16
+            raise ValueError("client_tag must be <instance_id><YYMMDD><seq> (app.core.tags)")
+        if self.key.kind == "INDEX":
+            raise ValueError("an index is not a tradable contract")
+        if self.product not in (Product.MIS, Product.CNC):
+            raise ValueError("only MIS and CNC orders are sent in this build")
+        if self.order_type is OrderType.LMT and self.trigger_price is not None:
+            raise ValueError("LMT orders take no trigger price")
+        if self.order_type is OrderType.SL_LMT:
+            if self.trigger_price is None or self.trigger_price <= 0:
+                raise ValueError("SL-LMT needs a positive trigger price")
+            # A sell stop triggers at or above its limit; a buy stop at or below.
+            if self.side is Side.SELL and self.trigger_price < self.limit_price:
+                raise ValueError("SL-LMT sell: trigger must be >= limit")
+            if self.side is Side.BUY and self.trigger_price > self.limit_price:
+                raise ValueError("SL-LMT buy: trigger must be <= limit")
+        return self
 
 
 class BrokerOrderStatus(StrEnum):
