@@ -345,6 +345,11 @@ Rules that keep it there:
 - systemd `MemoryMax=` per unit, so a leak kills one service cleanly instead of the
   whole box, and the watchdog alerts.
 
+**Phase 1 measurement:** importing everything the recorder loads (recorder, Fyers REST
+client, data socket, both strategy plugins) peaks at **66 MB RSS**, and neither pandas nor
+numpy is loaded (`tests/test_memory_rules.py` fails if pandas ever is). The live-session
+figure comes from the Phase 2 soak test.
+
 **Why not 0.5 GB:** the OS and Tailscale alone take ~220 MB, leaving ~290 MB for three
 processes that need ~380 MB. It would run only by leaning on swap, which makes tick
 processing latency unpredictable exactly when the market is busy.

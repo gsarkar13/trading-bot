@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import abc
 import datetime as dt
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from app.core.types import Segment
+from app.data.bars import Bar
 
 
 class DataNeeds(BaseModel):
@@ -38,17 +40,36 @@ class WarmupRequirement(BaseModel):
     prior_daily_candles: int = 0
 
 
-class MarketView(BaseModel):
-    """Read-only snapshot handed to a plugin on each event. Built by the engine.
+@dataclass(frozen=True, slots=True)
+class OIPulse:
+    """Option-chain change over the last W minutes at ATM +/- k strikes (section 7.4)."""
 
-    Phase 1 fills this with indicator state; Phase 0 fixes only the shape.
+    window_min: float
+    put_oi_change: int
+    call_oi_change: int
+    pcr_start: float
+    pcr_end: float
+    age_s: float  # age of the newest snapshot when this was computed
+
+
+@dataclass(frozen=True, slots=True)
+class MarketView:
+    """Read-only inputs for one completed 1-minute candle of one underlying.
+
+    Built identically by the backtester, replay and (Phase 2) the live engine, so a plugin
+    cannot tell which mode it runs in (section 14.1). A plugin builds its own indicators
+    (including its 15-minute candles) from these bars.
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
     underlying: str
-    now: dt.datetime
-    data: dict[str, object]
+    now: dt.datetime  # close time of `bar` (bar.ts + 1 minute)
+    bar: Bar  # the completed 1-minute index candle
+    futures_bar: Bar | None = None  # same-minute front-month futures candle (volume)
+    option_volume: int | None = None  # same-minute volume of the ATM option, if known
+    prior_day: Bar | None = None  # previous trading day's daily index candle
+    oi_pulse: OIPulse | None = None  # None = UNKNOWN (stale or never recorded)
+    volume_series_reset: bool = False  # a futures roll happened: restart RVOL lookback
+    new_session: bool = False  # first candle of the trading day
 
 
 class Signal(BaseModel):
@@ -63,6 +84,18 @@ class Signal(BaseModel):
     target_underlying: Decimal | None
     checklist: dict[str, object]  # each item's value and pass/fail, stored with the signal
     config_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class OpenPosition:
+    """What a plugin may see about its own open trade (underlying terms only)."""
+
+    direction: str
+    entry_underlying: float
+    stop: float
+    target: float | None
+    initial_risk: float
+    opened_at: dt.datetime
 
 
 class ExitDecision(BaseModel):
@@ -104,6 +137,10 @@ class StrategyPlugin(abc.ABC):
         """Optional. Most plugins act on candle close only."""
         return []
 
+    def on_trade_opened(self, signal: Signal) -> None:  # noqa: B027 - optional hook
+        """Called by the engine when one of this plugin's signals became a trade."""
+
     @abc.abstractmethod
-    def exit_logic(self, position: dict[str, object], view: MarketView) -> ExitDecision:
-        """Strategy-specific exit (target / trailing). Backstop stops live in the engine."""
+    def exit_logic(self, position: OpenPosition, view: MarketView) -> ExitDecision:
+        """Strategy-specific exit management (e.g. trailing). Stop and target hits are
+        detected by the engine/backtester from `position.stop` / `position.target`."""

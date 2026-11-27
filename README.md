@@ -1,7 +1,8 @@
 # NSE options + stocks algo platform
 
 Research → paper trading → locked live execution, for a ₹50,000 account.
-**Current state: Phase 0 (skeleton).** No broker connections, no orders, nothing runs yet.
+**Current state: Phase 1 (data and research).** Market data only: no orders can be placed.
+Your step-by-step guide is `docs/PHASE1_STEPS.md`.
 
 Read first:
 - `docs/ARCHITECTURE.md`: review of the brief, design, sizing estimate, open questions
@@ -44,6 +45,16 @@ Creates or upgrades `data/platform.db` (SQLite, WAL mode; ignored by git) and fi
 strategies table. Safe to run again: it never overwrites your edits.
 
 ## Tools available now
-```bash
-python -m app.tools.sizing_estimate --nifty-lot 65 --nifty-premium 120 --bn-lot 30 --bn-premium 500
-```
+| Command | What it does |
+|---|---|
+| `python -m app.tools.login` | daily Fyers login; stores the token encrypted |
+| `python -m app.tools.fyers_probe` | records one real response per Fyers call, secrets removed |
+| `python -m app.tools.backfill --from A --to B` | downloads history (resumable) |
+| `python -m app.services.recorder` | records a trading day (09:00-15:35 IST) |
+| `python -m app.tools.daily` | login if needed, then the recorder (what `deploy\windows_daily.bat` runs) |
+| `python -m app.tools.backtest run --from A --to B --period in-sample --grid` | backtest + HTML report |
+| `python -m app.tools.backtest freeze` | locks parameters before out-of-sample runs |
+| `python -m app.tools.replay --date D` | rebuilds a recorded day from ticks |
+| `python -m app.tools.sizing_estimate` | Phase 0 sizing estimate |
+
+Adding a strategy: `docs/STRATEGY_GUIDE.md`.

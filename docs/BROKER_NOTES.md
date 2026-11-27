@@ -90,13 +90,46 @@ Source: https://fyers.in/api-docs/v3/getting-started/plans-and-limits/ ✅ (whic
 - Futures: `NSE:NIFTY20OCTFUT` = `{Ex}:{Underlying}{YY}{MMM}FUT`.
 - Monthly options: `NSE:NIFTY20OCT11000CE` = `{Ex}:{Underlying}{YY}{MMM}{Strike}{CE|PE}`.
 - Weekly options: `NSE:NIFTY2010811000CE` = `{Ex}:{Underlying}{YY}{M}{dd}{Strike}{CE|PE}`, with `M` = 1–9, `O` (Oct), `N` (Nov), `D` (Dec).
-- Index: `NSE:NIFTY50-INDEX` seen in the data-socket docs ✅; `NSE:NIFTYBANK-INDEX` ⚠️ (your note; not on the page).
+- Index: `NSE:NIFTY50-INDEX`, `NSE:NIFTYBANK-INDEX`, `NSE:INDIAVIX-INDEX` ✅ (all three are in the real NSE_CM master, 2026-11-27; underlying names `NIFTY`, `BANKNIFTY`, `INDIAVIX`).
 - **We never build these strings.** Instruments are mapped from the symbol master by key; this table exists only to read and test the master.
 
 ### Symbol master ✅ (…/symbol-master/symbol-master-file/)
 - CSV: `https://public.fyers.in/sym_details/NSE_FO.csv` (derivatives), `NSE_CM.csv` (cash).
 - Columns, in order: Fytoken, Symbol details, Exchange instrument type, Minimum lot size, Tick size, ISIN, Trading session, Last update date, Expiry date, Symbol ticker, Exchange, Segment, Scrip code, Underlying symbol, Underlying scrip code, Strike price, Option type (CE/PE/XX), Underlying FyToken, reserved ×3.
 - Freeze qty (`qtyFreeze`) is only in the JSON master.
+
+### Verified from the real symbol master (downloaded 2026-11-27, master dated 2026-11-26) ✅
+Excerpts are committed as test fixtures in `tests/fixtures/fyers/`.
+- 21 columns, as listed above. Instrument type codes: **0 equity, 10 index, 11 index
+  future, 13 stock future, 14 index option, 15 stock option**.
+- Expiry column = epoch at 15:40 IST of the expiry day.
+- NIFTY: lot **65**, futures tick 0.1, options tick **0.05**, strike step **50**, weekly
+  expiries on **Tuesday** (e.g. 1, 8, 15 Dec 2026).
+- BANKNIFTY: lot **30**, futures tick 0.2, strike step **100**, **monthly options only**
+  (29 Dec 2026, 25 Jan 2027, ...).
+- **Holiday shift seen in real data:** the January 2027 monthly expiry is **Monday 25 Jan**,
+  because Tuesday 26 Jan is Republic Day. This is why expiries are always read from the
+  master.
+- Equities: `NSE:RELIANCE-EQ` etc., ISIN in column 5, series from the `-EQ` suffix.
+- `public.fyers.in` is reachable without login (it's how this was checked).
+
+### Verified from the `fyers-apiv3` 3.3.0 SDK source ✅
+- Auth: `SessionModel.generate_authcode()` builds `https://api-t1.fyers.in/api/v3/generate-authcode?...`;
+  `generate_token()` POSTs `{grant_type, appIdHash = sha256("app_id:secret"), code}` to
+  `/api/v3/validate-authcode`. Our `app_id_hash` is tested against the SDK's own.
+- REST data host `https://api-t1.fyers.in/data` (`/history`, `/quotes`, `/options-chain-v3`).
+- The SDK writes `fyersApi.log` / `fyersRequests.log` / `fyersDataSocket.log` into
+  `log_path`. We pass `logs/fyers` (git-ignored) and level ERROR. The request log records
+  only status and endpoint, never the auth header; the socket code does not log the token.
+- Data socket URL `wss://socket.fyers.in/hsm/v1-5/prod`; `reconnect=True` retries up to 50
+  times; methods `connect`, `subscribe(symbols, data_type)`, `close_connection`, `is_connected`.
+- Tick fields (from `map.json`): equity/F&O `ltp, vol_traded_today, last_traded_time,
+  exch_feed_time, bid_size, ask_size, bid_price, ask_price, ...`; index `ltp,
+  prev_close_price, exch_feed_time, high/low/open_price`. **The SDK removes `OI` from
+  F&O ticks**, so OI comes only from option-chain snapshots.
+- Still ⚠️ until your probe fixture arrives: the exact live option-chain response shape
+  (parser accepts `data.optionsChain` or top-level), the units of `exch_feed_time`
+  (assumed epoch seconds), and whether the redirect really carries `code=200`.
 
 ### Data WebSocket ✅ (…/websockets/data-socket/overview/)
 - Python: `from fyers_apiv3.FyersWebsocket import data_ws`; `FyersDataSocket(access_token="appid:token", litemode=False, reconnect=True, on_message=…)`; `subscribe(symbols=[…], data_type="SymbolUpdate" | "DepthUpdate")`.
@@ -105,10 +138,18 @@ Source: https://fyers.in/api-docs/v3/getting-started/plans-and-limits/ ✅ (whic
 - WSS URL not shown (the SDK handles it).
 
 ### SDK
-- PyPI `fyers-apiv3` ✅ (sdks-and-libraries page); import `fyers_apiv3`. Version 3.3.0 downloaded from PyPI on 2026-11-27. Data-socket limits need ≥ 3.1.0.
+- PyPI `fyers-apiv3` ✅ (sdks-and-libraries page); import `fyers_apiv3`. Version 3.3.0 downloaded from PyPI on 2026-11-27 and pinned `>=3.3,<4`. Data-socket limits need ≥ 3.1.0.
 - Measured import cost: ~44 MB RSS (REST + data socket).
 
 ---
+
+### App types (re-checked 2026-11-27, …/getting-started/create-an-app/individual-app/) ✅
+- Dashboard: https://fyers.in/web/api-dashboard/user-apps (the old myapi.fyers.in link
+  now redirects to the docs).
+- **Non-trading app** ("Create non-trading app"): data only, no static IP, any number of
+  them. Fields: App name, Redirect URL, optional webhook. This is what Phase 1 uses.
+- **Trading app**: one per user, activated (not created) under My apps; needs a primary
+  static IP (secondary optional); IPs can't be changed for 7 days after setting. Phase 3.
 
 ## Flattrade Pi API v2 (primary execution broker)
 

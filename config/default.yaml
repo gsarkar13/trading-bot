@@ -52,3 +52,9 @@ strategies:
     requested_mode: PAPER
     allow_semi: false
     params: {}          # defaults from PdhPdlParams
+
+research:
+  # Fixed in Phase 1 BEFORE any data was downloaded (DECISIONS.md D39). Data before this
+  # date is in-sample (parameters may be studied there); data from it on is out-of-sample
+  # and can only be run after `python -m app.tools.backtest freeze`.
+  out_of_sample_from: "2026-08-01"

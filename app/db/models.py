@@ -91,6 +91,21 @@ class Candle(Base):
     __table_args__ = (UniqueConstraint("instrument_key", "timeframe", "ts", "source"),)
 
 
+class BackfillChunk(Base):
+    """One finished backfill request, so an interrupted backfill resumes (section 16.4)."""
+
+    __tablename__ = "backfill_chunks"
+    id: Mapped[int] = _pk()
+    series: Mapped[str] = mapped_column(String(80))  # instrument key canonical
+    timeframe: Mapped[str] = mapped_column(String(4))
+    start: Mapped[dt.date] = mapped_column(Date)
+    end: Mapped[dt.date] = mapped_column(Date)
+    rows: Mapped[int] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(20))
+    done_at: Mapped[dt.datetime] = mapped_column(UTCDateTime)
+    __table_args__ = (UniqueConstraint("series", "timeframe", "start", "end", "source"),)
+
+
 class Tick(Base):
     """Raw ticks; rotated by the recorder's retention policy (section 16.1)."""
 

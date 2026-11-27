@@ -109,8 +109,8 @@ class OrderRequest(_Frozen):
     def _check(self) -> OrderRequest:
         if parse_tag(self.client_tag) is None:  # invariants 5 and 16
             raise ValueError("client_tag must be <instance_id><YYMMDD><seq> (app.core.tags)")
-        if self.key.kind == "INDEX":
-            raise ValueError("an index is not a tradable contract")
+        if not self.key.tradable:
+            raise ValueError(f"{self.key.kind} is not a tradable contract")
         if self.product not in (Product.MIS, Product.CNC):
             raise ValueError("only MIS and CNC orders are sent in this build")
         if self.order_type is OrderType.LMT and self.trigger_price is not None:
