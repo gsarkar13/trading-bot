@@ -1,0 +1,16 @@
+# Copy to config/host.yaml on each machine. Not secret, but differs per host.
+# Laptop (research host, no static IP):
+instance:
+  instance_id: LAP1
+  instance_role: research
+  host_label: laptop
+  registered_static_ip: null
+
+# Lightsail server (execution host) would instead use:
+# instance:
+#   instance_id: AWS1
+#   instance_role: execution
+#   host_label: lightsail-mumbai
+#   registered_static_ip: "x.x.x.x"   # the Lightsail static IP registered with both brokers
+# dashboard:
+#   extra_bind_hosts: ["100.x.y.z"]   # this server's Tailscale IP

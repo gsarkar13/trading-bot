@@ -1,0 +1,41 @@
+# Dated, configurable charges table (brief section 17). Never hardcode rates in code.
+# Each version applies from `effective_from` until the next version. Percentages are %.
+# "checked" = date the source was read. Re-check before Phase 1 backtests and every Budget.
+versions:
+  - version: "2026-04-01"
+    effective_from: "2026-04-01"
+    checked: "2026-11-27"
+    sources:
+      flattrade: "https://flattrade.in/charges"
+      fyers: "https://fyers.in/charges-list/"
+      consolidated: "https://zerodha.com/charges/"
+    brokerage:
+      flattrade: {options_per_order_inr: "0", futures_per_order_inr: "0",
+                  intraday_per_order_inr: "0", delivery_per_order_inr: "0"}
+      # Fyers: options flat 20/order; futures & intraday min(20, 0.03%); delivery min(20, 0.3%)
+      fyers: {options_per_order_inr: "20",
+              futures_per_order_inr: "20", futures_pct_cap: "0.03",
+              intraday_per_order_inr: "20", intraday_pct_cap: "0.03",
+              delivery_per_order_inr: "20", delivery_pct_cap: "0.3"}
+    stt_pct:
+      options_sell_on_premium: "0.15"     # flattrade + zerodha + fyers pages agree (checked 2026-11-27)
+      options_exercised_on_intrinsic: "0.15"  # zerodha; relevant only if square-off fails
+      futures_sell: "0.05"
+      equity_delivery_buy: "0.1"
+      equity_delivery_sell: "0.1"
+      equity_intraday_sell: "0.025"
+    exchange_txn_pct:                     # NSE
+      options_on_premium: "0.03553"
+      futures: "0.00183"
+      equity: "0.00307"
+    sebi_fee_per_crore_inr: "10"
+    ipft_per_crore_inr: "0.01"            # NSE IPFT (fyers page); tiny
+    stamp_duty_buy_pct:
+      options: "0.003"
+      futures: "0.002"
+      equity_delivery: "0.015"
+      equity_intraday: "0.003"
+    gst_pct: "18"                         # on brokerage + exchange txn + SEBI fee
+    dp_charge_per_sell_inr:               # equity delivery sells only, + GST
+      flattrade: "20"                     # page says "per debit transaction" (not "per scrip") - UNVERIFIED which
+      fyers: "12.5"                       # per scrip per sell day

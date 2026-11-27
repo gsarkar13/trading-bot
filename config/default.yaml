@@ -1,0 +1,54 @@
+# Committed defaults (brief section 22). Per-host overrides go in config/host.yaml
+# (git-ignored; copy config/host.example.yaml). Secrets go in .env, never here.
+schema_version: 1
+
+risk:
+  capital_inr: "50000"
+  daily_loss:   {pct_of_capital: 3}
+  weekly_loss:  {pct_of_capital: 8}
+  monthly_loss: {pct_of_capital: 12}
+  max_trades_per_day: 3
+  max_consecutive_losses: 3
+  # PROPOSED, not decided. Trader picks after reading docs/ARCHITECTURE.md section 7.
+  risk_per_trade_inr: "1000"
+  max_lots: 1
+  max_concurrent_positions: 1
+  max_premium_pct_of_capital: 40
+
+time_guards:
+  no_entry_start: "09:15:00"
+  no_entry_end:   "09:30:00"
+  last_entry:     "14:45:00"
+  square_off:     "15:10:00"
+
+rate_limits:
+  order_ops_per_second: 4
+
+modes:
+  global_ceiling: PAPER   # every restart is PAPER regardless (invariant 10)
+
+routing:
+  historical_candles: [fyers]
+  live_ticks: [fyers]
+  option_chain: [fyers]
+  instrument_master: [fyers, flattrade]
+  execution: [flattrade]
+
+ai:
+  enabled: false
+
+telegram:
+  enabled: false
+  login_reminder: "08:45:00"
+
+strategies:
+  - id: ema200_hammer_rvol_oi
+    active: false
+    requested_mode: PAPER
+    allow_semi: false
+    params: {}          # defaults from Ema200HammerParams
+  - id: pdh_pdl_breakout
+    active: false
+    requested_mode: PAPER
+    allow_semi: false
+    params: {}          # defaults from PdhPdlParams
