@@ -16,9 +16,9 @@ tokens/
 *.db-shm
 *.sqlite
 *.sqlite3
-data/
-backups/
-logs/
+/data/
+/backups/
+/logs/
 *.log
 *.parquet
 
