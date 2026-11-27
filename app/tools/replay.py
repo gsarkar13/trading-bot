@@ -4,8 +4,8 @@
 
 1. Rebuilds 1-minute candles from the stored ticks with the same CandleBuilder the live
    engine uses, and compares them with the official REST candles for that day.
-2. Runs both strategy plugins over [earlier candles for warm-up] + [replayed candles] and
-   lists the signals they would have produced.
+2. Runs the day through the backtest engine (same views, fill rules and books as the
+   backtester; earlier candles are used for warm-up) and writes the resulting ledger.
 Writes reports/replay/<date>.json.
 """
 
@@ -28,7 +28,7 @@ from app.core.types import InstrumentKey
 from app.data.bars import Bar
 from app.data.candle_builder import CandleBuilder
 from app.data.store import load_bars
-from app.strategies.base import MarketView, StrategyPlugin
+from app.research.dataset import Dataset
 
 M = dt.timedelta(minutes=1)
 
@@ -109,31 +109,19 @@ def compare(rebuilt: list[Bar], official: list[Bar], tol: float = 0.051) -> dict
     }
 
 
-def signals_for(
-    plugin: StrategyPlugin,
-    underlying: str,
-    history: list[Bar],
-    day_bars: list[Bar],
-    prior_day: Bar | None,
-    futures: dict[dt.datetime, Bar],
-) -> list[dict[str, Any]]:
-    out = []
-    for b in history:
-        plugin.on_candle("1m", MarketView(underlying, b.ts + M, b, futures_bar=futures.get(b.ts)))
-    for b in day_bars:
-        for s in plugin.on_candle(
-            "1m",
-            MarketView(underlying, b.ts + M, b, futures_bar=futures.get(b.ts), prior_day=prior_day),
-        ):
-            out.append(
-                {
-                    "at": to_ist(s.at).strftime("%H:%M"),
-                    "direction": s.direction,
-                    "ref": float(s.reference_price),
-                    "stop": float(s.stop_underlying),
-                }
-            )
-    return out
+def replay_dataset(
+    ds: Dataset, day: dt.date, rebuilt: dict[str, list[Bar]], rebuilt_fut: dict[str, list[Bar]]
+) -> Dataset:
+    """Swap the day's candles for the ones rebuilt from ticks; keep history for warm-up."""
+    for u, d in ds.per_underlying.items():
+        keep = [b for b in d.bars if to_ist(b.ts).date() != day]
+        d.bars = keep + rebuilt.get(u, [])
+        fut = {ts: b for ts, b in d.futures.items() if to_ist(ts).date() != day}
+        fut.update({b.ts: b for b in rebuilt_fut.get(u, [])})
+        d.futures = fut
+        if rebuilt.get(u) and day not in d.trading_days:
+            d.trading_days = sorted([*d.trading_days, day])
+    return ds
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -142,30 +130,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--date", required=True, type=dt.date.fromisoformat)
     a = ap.parse_args(argv)
-    from app.config.loader import load_config, trade_config_hash
+    from app.config.loader import load_config
     from app.db.session import make_engine
-    from app.strategies.ema200_hammer import Ema200HammerRvolOi
-    from app.strategies.pdh_pdl import PdhPdlBreakout
+    from app.research.dataset import load_dataset
+    from app.research.report import trade_rows
+    from app.tools.backtest import UNDERLYINGS, WARMUP_DAYS, make_books, run_books
 
     cfg = load_config()
     engine = make_engine(cfg.database.url)
-    report: dict[str, Any] = {"date": a.date.isoformat(), "series": {}, "signals": {}}
-    for u in ("NIFTY", "BANKNIFTY"):
+    report: dict[str, Any] = {"date": a.date.isoformat(), "series": {}}
+    rebuilt: dict[str, list[Bar]] = {}
+    rebuilt_fut: dict[str, list[Bar]] = {}
+    for u in UNDERLYINGS:
         key = f"INDEX|{u}"
-        ticks = load_ticks(engine, key, a.date)
-        rebuilt, stats = rebuild(ticks)
+        bars, stats = rebuild(load_ticks(engine, key, a.date))
+        rebuilt[u] = bars
         official = [
             b
             for b in load_bars(engine, key, "1m", "fyers_hist", a.date, a.date)
             if to_ist(b.ts).date() == a.date
         ]
-        report["series"][key] = {**stats, **compare(rebuilt, official)}
-        futures = {
-            b.ts: b
-            for b in load_bars(
-                engine, f"FUTC|{u}", "1m", "fyers_hist", a.date - dt.timedelta(days=45), a.date
-            )
-        }
+        report["series"][key] = {**stats, **compare(bars, official)}
         with engine.connect() as c:
             fut_keys = [
                 r[0]
@@ -174,44 +159,24 @@ def main(argv: list[str] | None = None) -> int:
                     {"p": f"FUT|{u}|%"},
                 )
             ]
-        for fk in fut_keys:  # today's futures candles rebuilt from the recorded ticks
-            fbars, _ = rebuild(load_ticks(engine, fk, a.date))
-            futures.update({b.ts: b for b in fbars})
-        hist = [
-            b
-            for b in load_bars(
-                engine,
-                key,
-                "1m",
-                ("fyers_hist", "fyers_ws"),
-                a.date - dt.timedelta(days=45),
-                a.date,
-            )
-            if to_ist(b.ts).date() < a.date
-        ]
-        prior = None
-        if hist:
-            last_day = to_ist(hist[-1].ts).date()
-            day_hist = [b for b in hist if to_ist(b.ts).date() == last_day]
-            prior = Bar(
-                day_hist[0].ts,
-                day_hist[0].open,
-                max(b.high for b in day_hist),
-                min(b.low for b in day_hist),
-                day_hist[-1].close,
-            )
-        for plugin in (
-            Ema200HammerRvolOi(
-                cfg.strategy_params("ema200_hammer_rvol_oi"),
-                trade_config_hash(cfg, "ema200_hammer_rvol_oi"),
-            ),
-            PdhPdlBreakout(
-                cfg.strategy_params("pdh_pdl_breakout"), trade_config_hash(cfg, "pdh_pdl_breakout")
-            ),
-        ):
-            report["signals"][f"{plugin.id} {u}"] = signals_for(
-                plugin, u, hist, rebuilt, prior, futures
-            )
+        for fk in fut_keys:
+            fb, fstats = rebuild(load_ticks(engine, fk, a.date))
+            rebuilt_fut.setdefault(u, []).extend(fb)
+            report["series"][fk] = fstats
+    ds = load_dataset(
+        engine,
+        UNDERLYINGS,
+        a.date - dt.timedelta(days=WARMUP_DAYS),
+        a.date,
+        on_expiry_day=cfg.contracts.nifty_expiry_day,
+    )
+    ds = replay_dataset(ds, a.date, rebuilt, rebuilt_fut)
+    results, _ = run_books(cfg, ds, make_books(cfg), a.date, a.date)
+    report["books"] = {
+        r.spec.name: {"signals": r.signals, "trades": len(r.trades), "rejected": dict(r.rejected)}
+        for r in results
+    }
+    report["ledger"] = trade_rows(results)
     out = Path("reports") / "replay" / f"{a.date}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=1), encoding="utf-8")

@@ -3,7 +3,7 @@
 Expiry rule: weekly expiries fall on the configured weekday; the monthly expiry is the
 last such weekday of the month. If that day is not a trading day, expiry moves to the
 previous trading day (brief 3.2). Trading days come from the downloaded data (D14); for
-dates after the data ends, weekdays are assumed open.
+dates outside the downloaded range, weekdays are assumed open.
 """
 
 from __future__ import annotations
@@ -79,10 +79,13 @@ class ExpiryCalendar:
     def __init__(self, spec: Spec, trading_days: Collection[dt.date]) -> None:
         self.spec = spec
         self.days = set(trading_days)
+        self.first_data_day = min(self.days) if self.days else dt.date.max
         self.last_data_day = max(self.days) if self.days else dt.date.min
 
     def _open(self, d: dt.date) -> bool:
-        if d > self.last_data_day:
+        """Inside the data range: open only if data exists. Outside it (before the first
+        or after the last downloaded day) nothing is known, so weekdays are assumed open."""
+        if d < self.first_data_day or d > self.last_data_day:
             return d.weekday() < 5
         return d in self.days
 

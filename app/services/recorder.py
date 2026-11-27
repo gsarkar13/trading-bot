@@ -34,14 +34,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from sqlalchemy import Engine, delete, func, select
+from sqlalchemy import Engine, delete, func, select, text
 from sqlalchemy.orm import Session
 
-from app.adapters.base import AdapterError, AuthExpiredError, ChainSnapshot, TickData
+from app.adapters.base import AuthExpiredError, ChainSnapshot, TickData
 from app.adapters.fyers.chain import parse_chain
 from app.adapters.fyers.symbols import SymbolMap
 from app.core.timeutil import IST, ist_dt, to_ist
-from app.core.types import InstrumentKey
+from app.core.types import InstrumentKey, OptionType
 from app.data.bars import Bar
 from app.data.candle_builder import CandleBuilder
 from app.data.store import upsert_bars
@@ -217,6 +217,14 @@ def backup_sqlite(db_path: Path, backup_dir: Path, day: dt.date, keep: int = 3) 
     return dest
 
 
+def sqlite_quick_check(db_path: Path) -> str:
+    con = sqlite3.connect(db_path)
+    try:
+        return str(con.execute("PRAGMA quick_check").fetchone()[0])
+    finally:
+        con.close()
+
+
 def db_bytes(db_path: Path | None) -> int:
     if db_path is None:
         return 0
@@ -262,6 +270,8 @@ class Recorder:
         self._pending: list[TickData] = []
         self._stream_factory = stream_factory
         self._expiry_epoch: dict[tuple[str, dt.date], int] = {}
+        self.chain_disabled = False
+        self.loop_errors = 0
         self.keys = self._tick_keys()
 
     def _tick_keys(self) -> list[InstrumentKey]:
@@ -296,6 +306,8 @@ class Recorder:
         self.stats.ws_candles[key.canonical] += 1
 
     def snapshot_chains(self) -> None:
+        if self.chain_disabled:
+            return
         for u in self.underlyings:
             for exp in trading_expiries(self.smap, u, self.day):
                 try:
@@ -318,11 +330,19 @@ class Recorder:
                     store_snapshot(self.engine, snap)
                     self.stats.snapshots[f"{u} {exp}"] += 1
                     self.stats.option_keys.update({r.key.canonical: r.key for r in snap.rows})
-                except AuthExpiredError:
-                    raise
-                except AdapterError as e:
+                except AuthExpiredError as e:
+                    # Keep recording ticks; stop asking for chains until a new login.
+                    self.chain_disabled = True
                     self.stats.chain_errors += 1
-                    log.warning("chain %s %s failed: %s", u, exp, e)
+                    log.error(
+                        "token rejected by option-chain call; chain snapshots paused "
+                        "(ticks keep recording). Log in again and restart: %s",
+                        e,
+                    )
+                    return
+                except Exception as e:
+                    self.stats.chain_errors += 1
+                    log.warning("chain %s %s failed: %s: %s", u, exp, type(e).__name__, e)
 
     def check_stale(self) -> None:
         now = self.now()
@@ -348,28 +368,60 @@ class Recorder:
         next_stale = time.monotonic() + self.stale_after_s
         try:
             while self.now() < self.stop_at:
-                if self._pending:
-                    batch, self._pending = self._pending, []
-                    await asyncio.to_thread(store_ticks, self.engine, batch)
-                for k, b in self.builders.items():
-                    for bar in b.close_until(self.now()):
-                        self._write_candle(k, bar)
-                if time.monotonic() >= next_chain:
-                    await asyncio.to_thread(self.snapshot_chains)
-                    next_chain = time.monotonic() + self.chain_interval_s
-                if time.monotonic() >= next_stale:
-                    self.check_stale()
-                    next_stale = time.monotonic() + 10
+                try:
+                    next_chain, next_stale = await self._tick_once(next_chain, next_stale)
+                except Exception as e:
+                    self.loop_errors += 1
+                    log.exception("recorder loop error #%d: %s", self.loop_errors, e)
                 await asyncio.sleep(1.0 if self.chain_interval_s >= 1 else 0.05)
         finally:
             stream.stop()
-            store_ticks(self.engine, self._pending)
+            try:
+                store_ticks(self.engine, self._pending)
+            except Exception:
+                log.exception("could not store the last %d ticks", len(self._pending))
             self._pending = []
             for k, b in self.builders.items():
                 for bar in b.flush():
                     self._write_candle(k, bar)
 
+    async def _tick_once(self, next_chain: float, next_stale: float) -> tuple[float, float]:
+        """One pass of the live loop: store ticks, close candles, snapshot, staleness."""
+        if self._pending:
+            batch, self._pending = self._pending, []
+            try:
+                await asyncio.to_thread(store_ticks, self.engine, batch)
+            except Exception:
+                self._pending = batch + self._pending  # retry on the next pass
+                raise
+        for k, b in self.builders.items():
+            for bar in b.close_until(self.now()):
+                self._write_candle(k, bar)
+        if time.monotonic() >= next_chain:
+            await asyncio.to_thread(self.snapshot_chains)
+            next_chain = time.monotonic() + self.chain_interval_s
+        if time.monotonic() >= next_stale:
+            self.check_stale()
+            next_stale = time.monotonic() + 10
+        return next_chain, next_stale
+
     # ---------------------------------------------------------------- after the close
+    def _snapped_option_keys(self) -> dict[str, InstrumentKey]:
+        a = ist_dt(self.day, dt.time(0, 0)).astimezone(dt.UTC).replace(tzinfo=None)
+        q = text(
+            "SELECT DISTINCT instrument_key FROM option_chain_snapshots "
+            "WHERE taken_at >= :a AND taken_at < :b"
+        )
+        out = {}
+        with self.engine.connect() as c:
+            for (canon,) in c.execute(
+                q, {"a": a.isoformat(" "), "b": (a + dt.timedelta(days=1)).isoformat(" ")}
+            ):
+                k = _parse_option_key(canon)
+                if k is not None and k.underlying in self.underlyings:
+                    out[canon] = k
+        return out
+
     def end_of_day(self, bytes_at_start: int) -> dict[str, Any]:
         rest: dict[str, int] = {}
         series: list[tuple[InstrumentKey, str, bool, str]] = []
@@ -388,9 +440,14 @@ class Recorder:
                     rest[f"{store_key} {tf}"] = upsert_bars(
                         self.engine, store_key, tf, HIST_SOURCE, bars
                     )
-                except AdapterError as e:
+                except Exception as e:
                     rest[f"{store_key} {tf}"] = -1
                     log.warning("EOD history %s failed: %s", store_key, e)
+        # Contracts snapped today, from the database, so a mid-day restart loses nothing.
+        try:
+            self.stats.option_keys.update(self._snapped_option_keys())
+        except Exception:
+            log.exception("could not read today's snapshot contracts")
         options_ok = 0
         for canon, k in sorted(self.stats.option_keys.items()):
             try:
@@ -399,12 +456,19 @@ class Recorder:
                 )
                 upsert_bars(self.engine, canon, "1m", HIST_SOURCE, bars)
                 options_ok += 1
-            except AdapterError as e:
+            except Exception as e:
                 log.warning("EOD option history %s failed: %s", canon, e)
-        pruned = prune_ticks(self.engine, self.now(), self.retention_days)
+        pruned = -1
+        try:
+            pruned = prune_ticks(self.engine, self.now(), self.retention_days)
+        except Exception:
+            log.exception("tick pruning failed")
         backup = None
-        if self.db_path is not None and self.db_path.exists():
-            backup = str(backup_sqlite(self.db_path, self.backup_dir, self.day))
+        try:
+            if self.db_path is not None and self.db_path.exists():
+                backup = str(backup_sqlite(self.db_path, self.backup_dir, self.day))
+        except Exception:
+            log.exception("backup failed")
         used = db_bytes(self.db_path) - bytes_at_start
         gaps = {k.canonical: len(b.stats.gap_minutes) for k, b in self.builders.items()}
         summary = {
@@ -416,6 +480,8 @@ class Recorder:
             "duplicate_ticks": {k.canonical: b.stats.duplicates for k, b in self.builders.items()},
             "chain_snapshots": dict(self.stats.snapshots),
             "chain_errors": self.stats.chain_errors,
+            "chain_paused_by_auth_error": self.chain_disabled,
+            "loop_errors": self.loop_errors,
             "option_contracts_seen": len(self.stats.option_keys),
             "option_contracts_with_rest_candles": options_ok,
             "rest_candles": rest,
@@ -432,6 +498,14 @@ class Recorder:
             json.dumps(summary, indent=1), encoding="utf-8"
         )
         return summary
+
+
+def _parse_option_key(canon: str) -> InstrumentKey | None:
+    try:
+        _, u, exp, strike, ot = canon.split("|")
+        return InstrumentKey.option(u, dt.date.fromisoformat(exp), strike, OptionType(ot))
+    except ValueError:
+        return None
 
 
 def _expiry_epochs(resp: dict[str, Any]) -> list[tuple[dt.date, int]]:
@@ -498,10 +572,17 @@ def main() -> int:
         if cfg.database.url.startswith("sqlite:///")
         else None
     )
+    if db_path is not None and db_path.exists():
+        integrity = sqlite_quick_check(db_path)  # ARCHITECTURE F9
+        log.info("database integrity check: %s", integrity)
+        if integrity != "ok":
+            log.error("database damaged; restore the newest file from data/backups/ (RUNBOOK)")
+            return 3
     rc = cfg.recorder
-    s1 = cfg.strategies[0].params if cfg.strategies else {}
-    chain_interval = float(s1.get("chain_interval_s", 30))  # type: ignore[arg-type]
-    n_strikes = int(s1.get("chain_n_strikes", 5))  # type: ignore[call-overload]
+    from app.config.schema import Ema200HammerParams
+
+    s1 = cfg.strategy_params("ema200_hammer_rvol_oi")
+    assert isinstance(s1, Ema200HammerParams)
 
     def stream_factory(
         on_tick: Callable[[TickData], None], on_status: Callable[[str, dict[str, Any]], None]
@@ -517,8 +598,9 @@ def main() -> int:
         stream_factory,
         day=today,
         underlyings=rc.underlyings,
-        chain_interval_s=chain_interval,
-        n_strikes=n_strikes,
+        chain_interval_s=float(s1.chain_interval_s),
+        n_strikes=s1.chain_n_strikes,
+        roll_days=s1.futures_roll_days_before_expiry,
         start=ist_dt(today, rc.start),
         stop=ist_dt(today, rc.stop),
         db_path=db_path,
@@ -529,8 +611,10 @@ def main() -> int:
         log.info("recording %s until %s IST", [k.canonical for k in rec.keys], rc.stop)
         try:
             asyncio.run(rec.run_live())
-        except AuthExpiredError as e:
-            log.error("token expired mid-session: %s", e)
+        except KeyboardInterrupt:
+            log.warning("stopped by keyboard; running the end-of-day steps now")
+        except Exception:
+            log.exception("live recording stopped by an error; running end-of-day steps")
     summary = rec.end_of_day(start_bytes)
     log.info(
         "done: %s",

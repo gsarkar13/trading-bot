@@ -158,3 +158,51 @@ def test_breakers_daily_loss_and_streak(cfg: PlatformConfig) -> None:
     ]
     kept, why = apply_breakers(streak, cfg)
     assert kept == [-10, -10, -10, 50] and why["LOSS_STREAK_BREAKER"] == 1  # reset next day
+
+
+def test_strategy1_trade_end_to_end(
+    migrated_engine: Engine, cfg: PlatformConfig, tmp_path: Path
+) -> None:
+    """A hammer planted at the 1m EMA200 in an uptrend, with a futures-volume spike, must
+    become exactly one S1_A trade (S1_B rejects it: no chain snapshots, OI unknown)."""
+    from app.config.schema import Ema200HammerParams
+    from app.strategies.base import MarketView
+    from app.strategies.ema200_hammer import Ema200HammerRvolOi
+    from tests.test_strategies import trend_sessions
+
+    days = trading_days(dt.date(2026, 6, 1), 27)
+    bars = trend_sessions(days[:-1], drift=0.1)
+    probe = Ema200HammerRvolOi(Ema200HammerParams(), "p")
+    for b in bars:
+        probe.on_candle("1m", MarketView("NIFTY", b.ts + M, b, futures_bar=b))
+    st = probe._s["NIFTY"]
+    # last day: quiet trend until 10:30, then the hammer, then a rally
+    last = days[-1]
+    px = bars[-1].close
+    day = []
+    for i in range(375):
+        ts = ist(last, 9, 15) + i * M
+        if i == 75:  # 10:30 hammer at the EMA (values tracked on the previous day's close)
+            ema, atr = st.ema.value or px, st.atr.value or 1.0
+            c = max(px, ema + 0.5)
+            day.append(Bar(ts, c - 0.2, c + 0.1, ema - 3 * atr, c, 9000))
+            px = c
+            continue
+        step = 0.5 if i > 75 else 0.1 * (1 if i % 2 else -1)
+        o, c = px, px + step
+        day.append(Bar(ts, o, max(o, c) + 0.3, min(o, c) - 0.3, c, 1000))
+        px = c
+    allbars = bars + day
+    upsert_bars(migrated_engine, "INDEX|NIFTY", "1m", "fyers_hist", allbars)
+    upsert_bars(migrated_engine, "FUTC|NIFTY", "1m", "fyers_hist", allbars)  # volume = bar's
+    upsert_bars(
+        migrated_engine,
+        "INDEX|INDIAVIX",
+        "1d",
+        "fyers_hist",
+        [Bar(ist(d, 9, 15), 13, 13, 13, 13) for d in days],
+    )
+    s = bt.run(migrated_engine, cfg, last, last, "all", False, tmp_path)
+    a, b = s["books"]["S1_A"], s["books"]["S1_B"]
+    assert a["signals"] >= 1 and a["trades"] == 1, a
+    assert b["trades"] == 0 and b["rejected"].get("FILTERED_BY_BOOK", 0) >= 1

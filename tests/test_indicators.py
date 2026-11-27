@@ -121,3 +121,14 @@ def test_bar_rejects_bad_ohlc_and_naive_time() -> None:
         bar(T, 100, 99, 98, 100)
     with pytest.raises(ValueError):
         Bar(dt.datetime(2026, 1, 1), 1, 1, 1, 1)  # noqa: DTZ001
+
+
+def test_rvol_time_of_day_ready_despite_odd_minutes() -> None:
+    r = RVOLTimeOfDay(sessions=3)
+    days = trading_days(D, 5)
+    r.add(bar(ist(days[0], 15, 30), 1, 1, 1, 1, v=5))  # one stray post-close candle
+    for d in days[:3]:
+        r.add(bar(ist(d, 10, 0), 1, 1, 1, 1, v=100))
+    assert r.ready  # three sessions seen
+    assert r.value_for(bar(ist(days[3], 10, 0), 1, 1, 1, 1, v=300)) == pytest.approx(3.0)
+    assert r.value_for(bar(ist(days[3], 15, 30), 1, 1, 1, 1, v=5)) is None  # thin slot

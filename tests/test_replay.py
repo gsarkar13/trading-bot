@@ -29,3 +29,19 @@ def test_replay_rebuilds_candles_identical_to_live(migrated_engine: Engine) -> N
     assert replayed == live and stats["duplicates"] == 1
     cmp = compare(replayed, live)
     assert cmp["ohlc_mismatches"] == 0 and cmp["matched_minutes"] == 5
+
+
+def test_replay_dataset_swaps_in_rebuilt_candles() -> None:
+    from app.data.bars import Bar
+    from app.research.dataset import Dataset, UnderlyingData
+    from app.tools.replay import replay_dataset
+
+    prev = D - dt.timedelta(days=3)
+    old = [Bar(ist(prev, 9, 15), 1, 1, 1, 1), Bar(ist(D, 9, 15), 5, 5, 5, 5)]
+    u = UnderlyingData("NIFTY", old, {}, {}, [prev])
+    ds = Dataset({"NIFTY": u}, [], {}, {}, {})
+    new = [Bar(ist(D, 9, 15), 7, 7, 7, 7)]
+    out = replay_dataset(ds, D, {"NIFTY": new}, {"NIFTY": new})
+    nifty = out.per_underlying["NIFTY"]
+    assert [b.close for b in nifty.bars] == [1, 7] and nifty.trading_days == [prev, D]
+    assert nifty.futures[new[0].ts].close == 7

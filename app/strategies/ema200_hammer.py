@@ -45,6 +45,7 @@ class _State:
             p.trend.strict_n_bars,
             p.min_range_atr,
             p.tol_value if p.tol_mode == "atr" else 0.0,
+            p.tol_value if p.tol_mode == "points" else 0.0,
         )
         self.ema = EMA(p.ema_period_1m, p.warmup_multiple)
         self.atr = ATR(p.atr_period)

@@ -9,7 +9,7 @@ Re-read this file and DECISIONS.md at the start of every session.
 ### Phase 1: done and verified in this environment (2026-11-27)
 | Item | Evidence |
 |---|---|
-| Checks | `ruff check .` all passed; `mypy` strict: no issues in 62 files; `pytest`: 158 passed on Python 3.13 and 3.12 |
+| Checks | `ruff check .` all passed; `mypy` strict: no issues in 62 files; `pytest`: see the PR description for the final count (Python 3.13 and 3.12) |
 | Fyers symbol master parsing and key mapping (options, futures, indices, equities) | `tests/test_fyers_symbols.py` on **real** master excerpts (`tests/fixtures/fyers/`), incl. the Jan 2027 holiday-shifted expiry |
 | Fyers login (URL, redirect parsing with the `code=200` trap, appIdHash vs SDK, 06:30 expiry), encrypted vault, rate limiter, error mapping, chain and tick parsing | `tests/test_fyers_adapter.py` |
 | Candle builder (exchange time, grace, duplicates, late ticks, cumulative volume, gaps), 15m/daily resampling, candle store | `tests/test_candles.py` |
@@ -18,8 +18,10 @@ Re-read this file and DECISIONS.md at the start of every session.
 | Indicators vs pandas (EMA, ATR), patterns incl. doji/zero-range/gap, RVOL both modes | `tests/test_indicators.py` |
 | Strategy 1 and PDH/PDL plugins, OI pulse, trend filter, trailing; PDH across holidays and long weekends | `tests/test_strategies.py` |
 | Black-Scholes (textbook values, put-call parity), expiry calendar, charges (hand-computed) | `tests/test_research_basics.py` |
-| Backtest end to end: planted breakout traded exactly once, three layers, IV sensitivity, report files, baseline comparison, out-of-sample lock, grid, breakers | `tests/test_backtest.py` |
-| Replay rebuilds candles identical to live | `tests/test_replay.py` |
+| Backtest end to end: a planted PDH breakout and a planted Strategy 1 hammer each traded exactly once; IV sensitivity; report files; baseline comparison; out-of-sample lock; grid | `tests/test_backtest.py` |
+| Fill rules: stop before target, gap through stop, square-off, long PE, entry gap, target from entry, trailing, expiry-day skip, layer 3 from recorded option candles, backstop, weekly breaker, VIX without look-ahead, expiry-day snapshot grouping, roll days | `tests/test_backtest_fills.py` |
+| Recorder survives malformed chain responses and auth errors; option list rebuilt after a restart; DB integrity check | `tests/test_recorder.py` |
+| Replay rebuilds candles identical to live, then runs the day through the backtest engine to a ledger | `tests/test_replay.py`, plus a manual run of the command |
 | Live processes never import pandas; recorder imports = 66 MB peak RSS | `tests/test_memory_rules.py`; measured command in ARCHITECTURE.md section 9 |
 
 ### Not verified (needs the trader's runs, docs/PHASE1_STEPS.md)

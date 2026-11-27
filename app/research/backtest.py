@@ -124,27 +124,48 @@ def _ist_time(ts: dt.datetime) -> dt.time:
     return to_ist(ts).time()
 
 
+def roll_reset_days(days: list[dt.date], cal: ExpiryCalendar, roll_days: int) -> set[dt.date]:
+    if not days:
+        return set()
+    out: set[dt.date] = set()
+    idx = {d: i for i, d in enumerate(days)}
+    for e in cal.monthly_expiries_between(days[0], days[-1]):
+        if e not in idx:
+            continue
+        i = idx[e]
+        if roll_days > 0 and i - roll_days + 1 >= 0:
+            out.add(days[i - roll_days + 1])  # first day with fewer than N days left
+        if i + 1 < len(days):
+            out.add(days[i + 1])  # continuous series has switched
+    return out
+
+
 def build_views(
-    u: UnderlyingData, cal: ExpiryCalendar, oi_window_min: float, oi_k: int, max_chain_age_s: float
+    u: UnderlyingData,
+    cal: ExpiryCalendar,
+    oi_window_min: float,
+    oi_k: int,
+    max_chain_age_s: float,
+    roll_days: int = 3,
 ) -> list[tuple[MarketView, bool]]:
-    """(view, gap_before) per 1-minute bar, identical for every book."""
+    """(view, gap_before) per 1-minute bar, identical for every book.
+
+    Volume lookbacks restart (F3) on two kinds of day, so RVOL never spans a contract
+    change: the day the live system rolls to the next future (`roll_days` trading days
+    before a monthly expiry, section 7.3) and the day after the expiry, when Fyers'
+    continuous series switches contract (DECISIONS.md D41).
+    """
     tracker = OIPulseTracker(oi_window_min, oi_k, max_chain_age_s)
     for p in u.chain_points:
         tracker.add(p)
-    monthly = (
-        set(cal.monthly_expiries_between(u.trading_days[0], u.trading_days[-1]))
-        if u.trading_days
-        else set()
-    )
+    reset_days = roll_reset_days(u.trading_days, cal, roll_days)
     out: list[tuple[MarketView, bool]] = []
     prev: Bar | None = None
     prev_day: dt.date | None = None
     for b in u.bars:
         d = to_ist(b.ts).date()
         new_session = d != prev_day
-        reset = False
-        if new_session and prev_day is not None and prev_day in monthly:
-            reset = True  # continuous futures switched contract after a monthly expiry
+        reset = new_session and d in reset_days
         gap = not new_session and prev is not None and b.ts - prev.ts != M
         now = b.ts + M
         out.append(
@@ -177,6 +198,16 @@ class Pricer:
     ) -> None:
         self.cfg, self.ds, self.specs, self.cals, self.charges = cfg, ds, specs, cals, charges
         self.notes: Counter[str] = Counter()
+
+    def skip_expiry_day(self, u: str, d: dt.date) -> bool:
+        """`contracts.nifty_expiry_day: skip` = no entries in a weekly underlying on the day
+        its nearest weekly expires (section 9.1)."""
+        if self.cfg.contracts.nifty_expiry_day != "skip" or not self.specs[u].weekly:
+            return False
+        rec = self.ds.recorded_expiries.get((u, d))
+        if rec:
+            return d in rec
+        return self.cals[u].next_weekly(d) == d
 
     def _expiry(self, u: str, d: dt.date) -> dt.date:
         rec = self.ds.recorded_expiries.get((u, d))
@@ -384,6 +415,8 @@ def simulate(
             sig = pending.pop(u, None)
             if sig is not None:
                 reason = _entry_block(sig, view, t, d, open_, trades_today, last_exit, cfg)
+                if reason is None and pricer.skip_expiry_day(u, d):
+                    reason = "EXPIRY_DAY_SKIP"
                 if reason:
                     rejected[reason] += 1
                 else:
@@ -402,9 +435,7 @@ def simulate(
                             bar.ts,
                             entry,
                             stop,
-                            float(sig.target_underlying)
-                            if sig.target_underlying is not None
-                            else None,
+                            target_from_entry(sig, entry),
                             abs(entry - stop),
                             dict(sig.checklist),
                             sig.config_hash,
@@ -486,6 +517,24 @@ def _entry_block(
     return None
 
 
+def target_from_entry(sig: Signal, entry: float) -> float | None:
+    """Keep the signal's reward:risk, measured from the ACTUAL entry price (the next
+    candle's open), not from the signal candle's close."""
+    if sig.target_underlying is None:
+        return None
+    ref, stop, tgt = (
+        float(sig.reference_price),
+        float(sig.stop_underlying),
+        float(sig.target_underlying),
+    )
+    risk0 = abs(ref - stop)
+    if risk0 <= 0:
+        return tgt
+    rr = abs(tgt - ref) / risk0
+    risk = abs(entry - stop)
+    return entry + rr * risk if tgt > ref else entry - rr * risk
+
+
 def _close(tr: Trade, at: dt.datetime, px: float, why: str) -> None:
     tr.exit_at, tr.exit, tr.exit_reason = at, px, why
 
@@ -552,33 +601,47 @@ def _forward(
 def apply_breakers(
     trades: list[Trade], cfg: PlatformConfig, scale: float = 1.0
 ) -> tuple[list[float], Counter[str]]:
-    """Sized net P&L per trade after the daily-loss and consecutive-loss breakers
-    (invariant 8). Breakers use realized P&L only (DECISIONS.md D31). A loss-streak trip is
-    assumed to be reset by the trader the next trading day."""
+    """Sized net P&L per trade after the circuit breakers (invariant 8): daily, weekly
+    (ISO week) and monthly loss limits, and the consecutive-loss streak. Realized P&L only
+    (DECISIONS.md D31). A tripped loss-streak breaker is assumed reset by the trader the
+    next trading day; weekly/monthly limits block until the next week/month."""
     risk = cfg.risk
     cap = float(risk.capital_inr)
-    daily_lim = cap * risk.daily_loss.pct_of_capital / 100
-    if risk.daily_loss.inr is not None:
-        daily_lim = min(daily_lim, float(risk.daily_loss.inr))
+
+    def limit(ll: object) -> float:
+        from app.config.schema import LossLimit
+
+        assert isinstance(ll, LossLimit)
+        v = cap * ll.pct_of_capital / 100
+        return min(v, float(ll.inr)) if ll.inr is not None else v
+
+    lim = {
+        "DAILY": limit(risk.daily_loss),
+        "WEEKLY": limit(risk.weekly_loss),
+        "MONTHLY": limit(risk.monthly_loss),
+    }
     out: list[float] = []
     why: Counter[str] = Counter()
-    day_pnl: dict[dt.date, float] = defaultdict(float)
+    pnl: dict[tuple[str, object], float] = defaultdict(float)
     streak, streak_trip_day = 0, None
     for t in sorted(trades, key=lambda x: x.entry_at):
         leg = t.modeled.get(scale)
         if leg is None or leg.lots_sized == 0:
             continue
         d = to_ist(t.entry_at).date()
+        periods = {"DAILY": d, "WEEKLY": tuple(d.isocalendar()[:2]), "MONTHLY": (d.year, d.month)}
         if streak_trip_day is not None and d > streak_trip_day:
             streak, streak_trip_day = 0, None
         if streak_trip_day is not None:
             why["LOSS_STREAK_BREAKER"] += 1
             continue
-        if day_pnl[d] <= -daily_lim:
-            why["DAILY_LOSS_BREAKER"] += 1
+        tripped = next((k for k, p in periods.items() if pnl[(k, p)] <= -lim[k]), None)
+        if tripped:
+            why[f"{tripped}_LOSS_BREAKER"] += 1
             continue
         out.append(leg.net_sized)
-        day_pnl[d] += leg.net_sized
+        for k, p in periods.items():
+            pnl[(k, p)] += leg.net_sized
         streak = streak + 1 if leg.net_sized < 0 else 0
         if streak >= risk.max_consecutive_losses:
             streak_trip_day = d

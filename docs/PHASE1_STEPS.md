@@ -105,7 +105,17 @@ python -m app.tools.replay --date 2026-12-02
 ```
 (use the date you recorded). **Attach:** `reports\replay\<date>.json`
 
-## 6. Getting updates
+## 6. Keep a copy of the data off the laptop (weekly, 2 minutes)
+
+The recorder keeps the newest 3 daily backups in `data\backups\`. If the laptop's disk
+fails, those go with it, so once a week copy the newest one somewhere else:
+- **Google Drive for desktop** (free): copy the newest `data\backups\platform-YYYYMMDD.db`
+  into your Google Drive folder in File Explorer.
+- or a USB drive.
+To restore: stop the recorder, copy the backup over `data\platform.db`, and start again.
+(The server in Phase 3 will do this automatically with `rclone`.)
+
+## 7. Getting updates
 
 When I tell you a new version is merged:
 ```bat

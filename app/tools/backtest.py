@@ -160,7 +160,12 @@ def run_books(
     assert isinstance(s1, Ema200HammerParams)
     views = {
         u: build_views(
-            d, cals[u], s1.oi_window_min, s1.oi_strikes_each_side, cfg.freshness.max_chain_age_s
+            d,
+            cals[u],
+            s1.oi_window_min,
+            s1.oi_strikes_each_side,
+            cfg.freshness.max_chain_age_s,
+            s1.futures_roll_days_before_expiry,
         )
         for u, d in ds.per_underlying.items()
         if d.bars
@@ -236,7 +241,13 @@ def run(
         raise OOSRefused("the sensitivity grid runs on in-sample data only")
     if lo > hi:
         raise OOSRefused(f"empty period {lo}..{hi}")
-    ds = load_dataset(engine, UNDERLYINGS, lo - dt.timedelta(days=WARMUP_DAYS), hi)
+    ds = load_dataset(
+        engine,
+        UNDERLYINGS,
+        lo - dt.timedelta(days=WARMUP_DAYS),
+        hi,
+        on_expiry_day=cfg.contracts.nifty_expiry_day,
+    )
     if not any(d.bars for d in ds.per_underlying.values()):
         raise OOSRefused("no candles in the database for this range; run backfill first")
     results, pricer = run_books(cfg, ds, make_books(cfg), lo, hi)
@@ -254,6 +265,7 @@ def run(
         "execution_broker_for_charges": cfg.research.execution_broker,
         "research_assumptions": cfg.research.model_dump(mode="json"),
         "pricing_notes": dict(pricer.notes),
+        "warnings": _warnings(cfg),
         "fill_rules": (
             "entry at next candle open; stop checked before target in a candle; "
             "gap beyond stop exits at the open; entries 09:30-14:45 IST; "
@@ -272,6 +284,23 @@ def run(
     (out_dir / f"{stem}.html").write_text(render_html(summary, results, g), encoding="utf-8")
     summary["_files"] = [str(out_dir / f"{stem}.json"), str(out_dir / f"{stem}.html")]
     return summary
+
+
+def _warnings(cfg: PlatformConfig) -> list[str]:
+    w = []
+    s1 = cfg.strategy_params("ema200_hammer_rvol_oi")
+    assert isinstance(s1, Ema200HammerParams)
+    if s1.rvol_source == "option":
+        w.append(
+            "rvol_source=option: no option volume history is fed to backtests yet, so "
+            "Strategy 1 cannot trade in this run; use rvol_source=futures"
+        )
+    if cfg.contracts.backstop_delta_multiple <= cfg.risk.max_backstop_loss_multiple_of_risk:
+        w.append(
+            "backstop check is implied by risk sizing with these multiples, so it never "
+            "skips a trade (it only bites if backstop_delta_multiple is raised)"
+        )
+    return w
 
 
 def coverage(ds: Dataset, a: dt.date, b: dt.date) -> dict[str, Any]:

@@ -62,12 +62,13 @@ class TrendFilter15:
         n_bars: int,
         min_range_atr: float,
         tol_atr: float,
+        tol_points: float = 0.0,
     ) -> None:
         self.agg = Aggregator(15)
         self.ema = EMA(period, warmup_multiple)
         self.atr = ATR(14, warmup_multiple)
         self.strict, self.n_bars = strict, n_bars
-        self.min_range_atr, self.tol_atr = min_range_atr, tol_atr
+        self.min_range_atr, self.tol_atr, self.tol_points = min_range_atr, tol_atr, tol_points
         self.last: Bar | None = None
         self._recent: list[tuple[Bar, float, float]] = []  # (bar, ema, atr)
 
@@ -100,7 +101,7 @@ class TrendFilter15:
 
     def _strict_ok(self, d: str) -> bool:
         for b, ema, atr in self._recent:
-            tol = self.tol_atr * atr
+            tol = self.tol_atr * atr + self.tol_points
             if (
                 d == "bull"
                 and b.low <= ema + tol

@@ -200,3 +200,100 @@ def test_backup_keeps_three(tmp_path: Path) -> None:
     for i in range(5):
         backup_sqlite(db, tmp_path / "b", DAY + dt.timedelta(days=i))
     assert len(list((tmp_path / "b").glob("platform-*.db"))) == 3
+
+
+class BrokenChainClient(FakeClient):
+    def __init__(self, mode: str) -> None:
+        super().__init__()
+        self.mode = mode
+        self.chain_calls = 0
+
+    def option_chain(
+        self, symbol: str, strikecount: int, expiry_epoch: int | None = None
+    ) -> dict[str, Any]:
+        self.chain_calls += 1
+        if self.mode == "auth":
+            from app.adapters.base import AuthExpiredError
+
+            raise AuthExpiredError("expired")
+        return {"s": "ok", "data": {"optionsChain": [{"strike_price": 1}]}}  # malformed
+
+
+def test_recorder_survives_bad_chain_responses_and_auth_errors(
+    migrated_engine: Engine, tmp_path: Path
+) -> None:
+    sm = smap()
+    for mode in ("malformed", "auth"):
+        client = BrokenChainClient(mode)
+        now = dt.datetime.now(dt.UTC)
+        rec = Recorder(
+            migrated_engine,
+            client,
+            sm,
+            lambda a, b: FakeStream(a, b, sm),
+            day=DAY,
+            underlyings=("NIFTY",),
+            chain_interval_s=0.3,
+            n_strikes=1,
+            start=now,
+            stop=now + dt.timedelta(seconds=1.5),
+            db_path=None,
+            report_dir=tmp_path / mode,
+            backup_dir=tmp_path / "b",
+        )
+        asyncio.run(rec.run_live())  # must not raise
+        summary = rec.end_of_day(0)
+        assert summary["chain_errors"] >= 1 and summary["ticks"]["INDEX|NIFTY"] == 3
+        if mode == "auth":
+            assert summary["chain_paused_by_auth_error"] and client.chain_calls == 1
+        else:
+            assert client.chain_calls >= 2  # kept trying
+
+
+def test_option_list_rebuilt_from_db_after_restart(migrated_engine: Engine, tmp_path: Path) -> None:
+    sm = smap()
+    now = dt.datetime.now(dt.UTC)
+    first = Recorder(
+        migrated_engine,
+        FakeClient(),
+        sm,
+        lambda a, b: FakeStream(a, b, sm),
+        day=DAY,
+        underlyings=("NIFTY",),
+        chain_interval_s=1,
+        n_strikes=1,
+        start=now,
+        stop=now,
+        db_path=None,
+        report_dir=tmp_path,
+    )
+    first.now = lambda: dt.datetime(2026, 11, 30, 5, 0, tzinfo=dt.UTC)  # type: ignore[method-assign]
+    first.snapshot_chains()  # morning snapshots, then the process "restarts"
+    client = FakeClient()
+    second = Recorder(
+        migrated_engine,
+        client,
+        sm,
+        lambda a, b: FakeStream(a, b, sm),
+        day=DAY,
+        underlyings=("NIFTY",),
+        chain_interval_s=1,
+        n_strikes=1,
+        start=now,
+        stop=now,
+        db_path=None,
+        report_dir=tmp_path,
+    )
+    assert second.stats.option_keys == {}
+    summary = second.end_of_day(0)
+    assert summary["option_contracts_with_rest_candles"] == 6  # 3 strikes x CE/PE
+
+
+def test_quick_check(tmp_path: Path) -> None:
+    import sqlite3
+
+    from app.services.recorder import sqlite_quick_check
+
+    db = tmp_path / "x.db"
+    sqlite3.connect(db).execute("create table t(x)").connection.commit()
+    assert sqlite_quick_check(db) == "ok"

@@ -97,3 +97,11 @@ def test_store_round_trip_ignores_duplicates(migrated_engine: Engine) -> None:
     assert got[5] == bars[5]
     ws_only = load_bars(migrated_engine, K.canonical, "1m", "fyers_ws")
     assert len(ws_only) == 1
+
+
+def test_refetch_corrects_a_partial_candle(migrated_engine: Engine) -> None:
+    d = ist(D, 9, 15)
+    upsert_bars(migrated_engine, "INDEX|NIFTY", "1d", "fyers_hist", [bar(d, 100, 105, 99, 104)])
+    upsert_bars(migrated_engine, "INDEX|NIFTY", "1d", "fyers_hist", [bar(d, 100, 140, 95, 130)])
+    got = load_bars(migrated_engine, "INDEX|NIFTY", "1d", "fyers_hist")
+    assert len(got) == 1 and (got[0].high, got[0].low, got[0].close) == (140, 95, 130)

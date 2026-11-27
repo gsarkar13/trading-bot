@@ -111,7 +111,7 @@ class RVOLTimeOfDay:
     def __init__(self, sessions: int = 20) -> None:
         self.sessions = sessions
         self._by_minute: dict[int, deque[int]] = {}
-        self._last_date: dt.date | None = None
+        self._dates: deque[dt.date] = deque(maxlen=sessions)
 
     def value_for(self, bar: Bar) -> float | None:
         hist = self._by_minute.get(session_minute_index(bar.ts))
@@ -123,15 +123,19 @@ class RVOLTimeOfDay:
     def add(self, bar: Bar) -> None:
         idx = session_minute_index(bar.ts)
         self._by_minute.setdefault(idx, deque(maxlen=self.sessions)).append(bar.volume)
+        d = to_ist(bar.ts).date()
+        if not self._dates or self._dates[-1] != d:
+            self._dates.append(d)
 
     def reset(self) -> None:
         self._by_minute.clear()
+        self._dates.clear()
 
     @property
     def ready(self) -> bool:
-        return bool(self._by_minute) and all(
-            len(h) >= self.sessions for h in self._by_minute.values()
-        )
+        """True once N sessions have been seen. A minute slot with less history still
+        returns None from value_for(), which blocks the signal (fail closed)."""
+        return len(self._dates) >= self.sessions
 
 
 # ---------------------------------------------------------------- candle patterns

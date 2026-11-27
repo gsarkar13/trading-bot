@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -23,6 +24,7 @@ class RateLimiter:
         self._clock = clock
         self._calls: deque[float] = deque()
         self._lock = asyncio.Lock()
+        self._tlock = threading.Lock()  # acquire_blocking may be called from several threads
 
     def wait_time(self) -> float:
         now = self._clock()
@@ -46,6 +48,7 @@ class RateLimiter:
             self.record()
 
     def acquire_blocking(self) -> None:
-        while (w := self.wait_time()) > 0:
-            time.sleep(w)
-        self.record()
+        with self._tlock:
+            while (w := self.wait_time()) > 0:
+                time.sleep(w)
+            self.record()

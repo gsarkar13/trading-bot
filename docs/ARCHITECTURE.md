@@ -138,7 +138,7 @@ Points where the brief is incomplete or where I see a risk:
 | F6 | Price band / circuit limit rejects the protective SL-LMT or the exit limit | Rejection reason is parsed; the limit price is clamped to the band; escalate (P3) |
 | F7 | Broker accepts the order but the response is lost (Fyers documents code 201 as "request made, not acknowledged") | Treated as `UNCERTAIN`; tag lookup in the order book before any retry (invariant 5) (P2/P3) |
 | F8 | The laptop sleeps or Windows Update reboots it mid-session (PAPER/recorder only) | Runbook power settings; the recorder detects and logs gaps; never used for LIVE (P1/P3) |
-| F9 | SQLite file corruption from a power cut on the laptop | WAL with `synchronous=NORMAL`, nightly `.backup`, integrity check at start (P1) |
+| F9 | SQLite file corruption from a power cut on the laptop | WAL with `synchronous=NORMAL`, nightly `.backup` (3 kept), `PRAGMA quick_check` at recorder start (done in Phase 1) |
 | F10 | Lightsail instance stopped and started: static IP stays attached, but the public IP check briefly fails | IP check inconclusive means LIVE disabled; re-check every 10 min; alert explains (P3) |
 | F11 | Telegram API down at the exact moment of `/flatten` | Dashboard button and CLI are independent routes; watchdog retries and logs (P2) |
 | F12 | Clock correct, but the broker's exchange timestamps lag (feed delay) | Tick age measured with the exchange timestamp versus local NTP-synced time, not receive time (P1) |
