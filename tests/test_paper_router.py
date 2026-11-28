@@ -276,3 +276,23 @@ def test_lost_response_is_looked_up_not_resent() -> None:
     assert len(entries) == 1  # found by tag; never sent twice
     assert entries[0].status is BrokerOrderStatus.FILLED and m.long_qty == 65
     assert any("uncertain" in a.message for a in alerts)
+
+
+def test_compaction_keeps_open_positions_and_never_reuses_ids(tmp_path: object) -> None:
+    from pathlib import Path
+
+    assert isinstance(tmp_path, Path)
+    c = Clock()
+    f = tmp_path / "book.json"
+    b = PaperBroker(INFO, c, PaperConfig(latency_s=0.0), state_path=f)
+    b.on_market(KEY, depth("120.00", "120.50", clock=c))
+    b.place_sync(req("PC1261202000001", Side.BUY, 65, "121.00"))
+    b.place_sync(req("PC1261202000002", Side.SELL, 65, "119.00"))  # flat again
+    b2 = PaperBroker(INFO, c, PaperConfig(latency_s=0.0), state_path=f)
+    assert b2.compact() == 2 and asyncio.run(b2.order_book()) == []
+    b2.on_market(KEY, depth("120.00", "120.50", clock=c))
+    r = b2.place_sync(req("PC1261202000003", Side.BUY, 65, "121.00"))
+    assert r.broker_order_id == "PAPER00000003"  # ids continue after compaction
+    b3 = PaperBroker(INFO, c, PaperConfig(latency_s=0.0), state_path=f)
+    assert b3.compact() == 0  # an open position is kept
+    assert asyncio.run(b3.positions())[0].net_qty == 65

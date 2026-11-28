@@ -135,6 +135,9 @@ class OrderRouter:
         ]
         for m in done:
             del self.positions[m.position_uid]
+            for tag in m.orders:  # no events can matter for a closed position any more
+                self.owner.pop(tag, None)
+                self.oid.pop(tag, None)
         return done
 
     # ------------------------------------------------------------ commands -> broker

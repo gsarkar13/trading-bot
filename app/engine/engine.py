@@ -306,6 +306,7 @@ class TradingEngine:
         self.tags = TagSource(self.iid, to_ist(now).date(), used_tags(self.db, []) + all_tags)
         for book in books:
             await self._reconcile(book, Mode.PAPER)
+            self._paper_for(book).compact()  # yesterday's finished orders: ledger has them
         if self.live is not None:
             await self._reconcile("REAL", Mode.LIVE)
         if self._stored_open(Mode.SEMI):
@@ -544,6 +545,12 @@ class TradingEngine:
         gap = not new_session and prev is not None and bar.ts - prev.ts != M
         self.last_bar[u] = bar
         fut = self.fut_bars.get(u, {}).pop(bar.ts, None)
+        # bounded memory over a long session: old candles' bookkeeping is dropped
+        for k in [k for k in self.taken_this_candle if k[1] < bar.ts]:
+            del self.taken_this_candle[k]
+        fb = self.fut_bars.get(u, {})
+        for ts in [ts for ts in fb if ts < bar.ts - 10 * M]:
+            del fb[ts]
         view = MarketView(
             underlying=u,
             now=now,
@@ -1035,6 +1042,7 @@ class TradingEngine:
                 book = p.book if p else self.store.meta[m.position_uid].book
                 broker = self.cfg.research.execution_broker
                 t = self.store.record_trade(m, self.charges, broker, p.overrides if p else [])
+                self.store.forget(m)
                 if t is None:
                     continue
                 self._breakers(book).record_close(now, t.net_pnl)

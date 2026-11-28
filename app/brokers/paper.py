@@ -116,8 +116,22 @@ class PaperBroker(BaseExecutionBroker):
         self._rnd = random.Random(self.cfg.seed)  # noqa: S311 - simulated rejections, not crypto
         self._cash_used = Decimal(0)
         self._dirty = False
+        self._last_n = 0
         if self.state_path is not None and self.state_path.exists():
             self._load(self.state_path)
+
+    def compact(self) -> int:
+        """Forget finished orders of instruments that are flat with nothing working.
+        Run at start-up so a long-lived paper book stays small. Returns orders dropped."""
+        keep = {o.req.key for o in self._orders.values() if o.working}
+        keep |= {o.req.key for o in self._orders.values() if self._long(o.req.key) != 0}
+        drop = [oid for oid, o in self._orders.items() if o.req.key not in keep]
+        for oid in drop:
+            o = self._orders.pop(oid)
+            self._by_tag.pop(o.req.client_tag, None)
+        if drop:
+            self._save()
+        return len(drop)
 
     # ------------------------------------------------------------ persistence
     def _emit(self, ev: BrokerEvent) -> None:
@@ -147,7 +161,7 @@ class PaperBroker(BaseExecutionBroker):
                     "updated": o.updated.isoformat() if o.updated else None,
                 }
             )
-        n = int(rows[-1]["oid"][5:]) if rows else 0
+        n = self._last_n  # never reuse an id, even after compaction
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"seq": n, "orders": rows}), encoding="utf-8")
@@ -173,7 +187,8 @@ class PaperBroker(BaseExecutionBroker):
             )
             self._orders[o.oid] = o
             self._by_tag[o.req.client_tag] = o.oid
-        self._seq = itertools.count(int(raw["seq"]) + 1)
+        self._last_n = int(raw["seq"])
+        self._seq = itertools.count(self._last_n + 1)
 
     # ------------------------------------------------------------ provider basics
     def capabilities(self) -> frozenset[Capability]:
@@ -280,7 +295,8 @@ class PaperBroker(BaseExecutionBroker):
 
     def place_sync(self, req: OrderRequest) -> PlaceResult:
         now = self.now()
-        oid = f"PAPER{next(self._seq):08d}"
+        self._last_n = next(self._seq)
+        oid = f"PAPER{self._last_n:08d}"
         why = self._reject_reason(req)  # before the order exists, so it isn't counted
         o = _PaperOrder(
             oid,

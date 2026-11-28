@@ -171,6 +171,13 @@ class DbOrderStore:
                 p.closed_at = self.now()
             s.commit()
 
+    def forget(self, m: PositionMachine) -> None:
+        """Drop the in-memory caches of a settled position (bounded memory)."""
+        self.meta.pop(m.position_uid, None)
+        self.keys.pop(m.position_uid, None)
+        for tag in m.orders:
+            self._fills.pop(tag, None)
+
     # ------------------------------------------------------------ ledger
     def record_trade(
         self,

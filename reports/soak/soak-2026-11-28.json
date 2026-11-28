@@ -1,0 +1,15 @@
+{
+ "days": [
+  {
+   "date": "2026-12-01",
+   "rss_mb": 77.8125,
+   "signals_total": 19,
+   "open_positions": 0,
+   "elapsed_s": 24.3
+  }
+ ],
+ "peak_rss_mb": 77.8125,
+ "growth_mb_per_day_after_day2": 0.0,
+ "limit_mb": 600,
+ "pass": true
+}
