@@ -22,6 +22,8 @@ class Secrets(BaseSettings):
     telegram_bot_token: SecretStr | None = None
     gemini_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
+    openai_api_key: SecretStr | None = None
+    openrouter_api_key: SecretStr | None = None
     dashboard_password_hash: SecretStr | None = None
     vault_path: str = "data/vault.json"
 

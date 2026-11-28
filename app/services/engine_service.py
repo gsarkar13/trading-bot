@@ -30,6 +30,7 @@ from typing import Any
 import app.strategies.plugins  # noqa: F401 - registers the implemented strategies
 from app.adapters.base import AuthExpiredError, InstrumentInfo, InstrumentMappingError, TickData
 from app.adapters.fyers.symbols import SymbolMap
+from app.ai.advisor import Advisor
 from app.brokers.paper import Depth, PaperBroker, PaperConfig
 from app.config.loader import REPO_ROOT, trade_config_hash
 from app.config.schema import PlatformConfig
@@ -94,9 +95,10 @@ class EngineService:
         recorder: Any,
         now: Callable[[], dt.datetime],
         state_dir: Path,
+        advisor: Advisor | None = None,
     ) -> None:
         self.cfg, self.db, self.smap, self.client, self.rec = cfg, db, smap, client, recorder
-        self.now, self.state_dir = now, state_dir
+        self.now, self.state_dir, self.advisor = now, state_dir, advisor
         self.process_id = uuid.uuid4().hex
         self.alerts = AlertBus(db, cfg.instance.instance_id, now)
         self.health = Health(data_login=True)
@@ -164,6 +166,7 @@ class EngineService:
             quote_fetch=self._quote,
             subscribe=lambda k: self.rec.watch([k]),
             health=self.health,
+            on_signal=self.advisor.submit if self.advisor else None,
         )
         for u, vs in views.items():
             for v in vs:
@@ -311,9 +314,16 @@ def main() -> int:  # pragma: no cover - needs a live Fyers login
         db_path=db_path,
         retention_days=rc.raw_tick_retention_days,
     )
-    svc = EngineService(
-        cfg, db, smap, client, rec, lambda: dt.datetime.now(dt.UTC), Path("data") / "paper"
-    )
+    from app.ai.providers import make_provider
+
+    secrets = Secrets()
+
+    def now() -> dt.datetime:
+        return dt.datetime.now(dt.UTC)
+
+    providers = {1: make_provider(cfg.ai.slot1, secrets), 2: make_provider(cfg.ai.slot2, secrets)}
+    advisor = Advisor(cfg.ai, db, providers, now)
+    svc = EngineService(cfg, db, smap, client, rec, now, Path("data") / "paper", advisor)
     from app.services.recorder import db_bytes
 
     start_bytes = db_bytes(db_path)
@@ -325,7 +335,11 @@ def main() -> int:  # pragma: no cover - needs a live Fyers login
         log.exception("engine stopped by an error")
     finally:
         rec.end_of_day(start_bytes)
-        write_journal(db, today)
+        stats = write_journal(db, today)
+        try:
+            asyncio.run(advisor.post_mortem(today, stats))
+        except Exception:
+            log.exception("AI journal entry failed (advisory only)")
         lock.release()
     return 0
 

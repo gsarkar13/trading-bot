@@ -203,6 +203,7 @@ class TradingEngine:
         quote_fetch: QuoteFetch | None = None,
         subscribe: Callable[[InstrumentKey], None] | None = None,
         health: Health | None = None,
+        on_signal: Callable[[str, dict[str, object]], None] | None = None,
     ) -> None:
         self.cfg, self.db, self.smap, self.now = cfg, db, smap, now
         self.slots = slots
@@ -211,6 +212,7 @@ class TradingEngine:
         self.history: History = history or NoHistory()
         self.quote_fetch, self.subscribe = quote_fetch, subscribe
         self.health = health or Health()
+        self.on_signal = on_signal  # AI advisory side channel: fire and forget (inv 9)
         self.iid = cfg.instance.instance_id
         self.state = EngineState()
         self.store = DbOrderStore(db, now)
@@ -866,6 +868,23 @@ class TradingEngine:
                 )
             )
             s.commit()
+        if self.on_signal is not None:
+            snap: dict[str, object] = {
+                "strategy": slot.id,
+                "underlying": sig.underlying,
+                "direction": sig.direction,
+                "at_ist": to_ist(sig.at).isoformat(),
+                "reference": float(sig.reference_price),
+                "stop": float(sig.stop_underlying),
+                "target": None if sig.target_underlying is None else float(sig.target_underlying),
+                "india_vix": self.vix,
+                "checklist": _jsonable(checklist),
+                "outcome": outcome,
+            }
+            try:
+                self.on_signal(uid, snap)  # only schedules a task; never awaited here
+            except Exception:
+                log.exception("AI hook failed (ignored: advisory only)")
 
     # ------------------------------------------------------------ exits
     async def _check_levels(self, u: str, low: float, high: float) -> None:

@@ -11,6 +11,7 @@ dependencies = [
     "pyyaml>=6.0,<7",
     "fyers-apiv3>=3.3,<4",
     "cryptography>=43",
+    "anthropic>=1.17,<2",  # AI slot (advisory only); brings httpx2, used for other providers
 ]
 
 [project.optional-dependencies]
