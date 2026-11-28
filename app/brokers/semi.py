@@ -196,8 +196,16 @@ class SemiBroker(BaseExecutionBroker):
     # ------------------------------------------------------------ trader -> engine
     def confirm_entry(self, uid: str, price: Decimal, qty: int | None = None) -> None:
         t = self.tasks[uid]
-        if t.status != "SENT":
+        if t.status not in ("SENT", "EXPIRED"):
             raise ValueError(f"task {uid} is {t.status}")
+        if t.status == "EXPIRED":  # the trader DID buy, just late: record it, then exit
+            self.on_alert(
+                Alert(
+                    "critical",
+                    f"{uid}: confirmed after the task expired; the "
+                    "engine will ask you to exit this position",
+                )
+            )
         t.status, t.fill_price, t.confirmed_at = "CONFIRMED", price, self.now()
         self._fill(t.entry_tag, qty or t.qty, price)  # already acked when delivered
 

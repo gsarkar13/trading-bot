@@ -102,6 +102,7 @@ class EngineService:
         self.cfg, self.db, self.smap, self.client, self.rec = cfg, db, smap, client, recorder
         self.now, self.state_dir, self.advisor = now, state_dir, advisor
         self.calendar_dir = REPO_ROOT / "config" / "calendar"
+        self.token_expires: dt.datetime | None = None
         self.process_id = uuid.uuid4().hex
         self.alerts = AlertBus(db, cfg.instance.instance_id, now)
         self.health = Health(data_login=True)
@@ -244,6 +245,11 @@ class EngineService:
         last_watch = 0.0
         while self.now() < self.stop_at:
             try:
+                # the data gate's "token expired" check (invariant 6)
+                expired = self.token_expires is not None and self.now() >= self.token_expires
+                self.health.data_login = not expired and not getattr(
+                    self.rec, "chain_disabled", False
+                )
                 await eng.on_timer()
                 if time.monotonic() - last_watch > 60:
                     last_watch = time.monotonic()
@@ -386,6 +392,7 @@ def main() -> int:  # pragma: no cover - needs a live Fyers login
     providers = {1: make_provider(cfg.ai.slot1, secrets), 2: make_provider(cfg.ai.slot2, secrets)}
     advisor = Advisor(cfg.ai, db, providers, now)
     svc = EngineService(cfg, db, smap, client, rec, now, Path("data") / "paper", advisor)
+    svc.token_expires = token.expires_at
     from app.services.recorder import db_bytes
 
     start_bytes = db_bytes(db_path)

@@ -126,3 +126,15 @@ def test_skip_and_expiry() -> None:
     c2.add(301)  # task expiry (no re-pricing in SEMI)
     asyncio.run(r2.tick())
     assert m2.state is PositionState.CLOSED and (uid2, "expired") in seen2
+
+
+def test_late_confirm_after_expiry_is_recorded_then_exited() -> None:
+    c, b, r, m, _seen, alerts = setup()
+    uid = start(c, b, r, m)
+    c.add(301)
+    asyncio.run(r.tick())
+    assert m.state is PositionState.CLOSED
+    b.confirm_entry(uid, D("120.40"))  # the trader did buy, just too late
+    asyncio.run(r.pump())
+    assert m.long_qty == 65 and m.state is PositionState.EXITING  # never ignored
+    assert any(a.level == "critical" and "after the task expired" in a.message for a in alerts)

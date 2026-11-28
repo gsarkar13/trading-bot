@@ -25,6 +25,14 @@ into the running engine. All run in CI on every push.
 | 17 | No strategy/mode change while exposed | `test_risk_modes.py::test_strategy_changes_blocked_while_exposed`, `test_strategies_table.py::test_placeholders_cannot_be_switched_on` |
 | 18 | Secrets never leave the host | `test_secrets_scan.py` (repo + fixtures scanned), `test_ai_advisor.py::test_snapshot_is_scrubbed_before_it_leaves`, `test_api.py::test_strategies_table_and_settings_never_leak_keys`, `test_api.py::test_password_hash_roundtrip` |
 
+Review regressions (`tests/test_review_fixes.py`): lost reply on a rejected exit (inv 2/3),
+late entry fill after close (inv 1/11), refused modify (inv 2), bot token never logged
+(inv 18), non-text Telegram message (inv 11), isolated timer steps, exits made while the
+engine was down booked into breakers (inv 7/8), adopted positions squared off (inv 7/13),
+moved stops survive restart; `test_api.py::test_review11_foreign_host_and_origin_are_refused`;
+`test_chaos.py::test_candle_gap_blocks_entries_for_fifteen_minutes` (inv 6);
+`test_semi.py::test_late_confirm_after_expiry_is_recorded_then_exited` (inv 15).
+
 ## Other Phase 2 gate items
 
 | Gate item | Test |

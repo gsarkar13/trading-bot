@@ -133,3 +133,26 @@ def test_code_status_is_derived_from_the_registry(migrated_engine: Engine, tmp_p
     st = {r["id"]: r["code_status"] for r in c.get("/api/strategies").json()}
     assert st["pdh_pdl_breakout"] == "implemented" and st["ema200_hammer_rvol_oi"] == "implemented"
     assert st["orb"] == "placeholder"
+
+
+def test_review11_foreign_host_and_origin_are_refused(
+    migrated_engine: Engine, tmp_path: Path
+) -> None:
+    _, c = setup(migrated_engine, tmp_path, password=False)
+    assert c.get("/api/status", headers={"Host": "evil.example"}).status_code == 400
+    assert (
+        c.post(
+            "/api/flatten", json={"phrase": "FLATTEN"}, headers={**H, "Host": "rebind.evil.example"}
+        ).status_code
+        == 400
+    )
+    from starlette.websockets import WebSocketDisconnect
+
+    with (
+        pytest.raises(WebSocketDisconnect) as e,
+        c.websocket_connect("/ws", headers={"Origin": "https://evil.example"}) as ws,
+    ):
+        ws.receive_json()
+    assert e.value.code == 4403
+    with c.websocket_connect("/ws", headers={"Origin": "http://127.0.0.1:8600"}) as ws:
+        assert "engine" in ws.receive_json()

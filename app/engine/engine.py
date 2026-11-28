@@ -277,6 +277,7 @@ class TradingEngine:
         self.fut_builders: dict[str, CandleBuilder] = {}
         self.fut_bars: dict[str, dict[dt.datetime, Bar]] = {}
         self.last_bar: dict[str, Bar] = {}
+        self.gap_until: dict[str, dt.datetime] = {}
         self.last_exit: dict[str, dt.datetime] = {}
         self.taken_this_candle: dict[tuple[str, dt.datetime], str] = {}
         self._last_foreign_check: dt.datetime | None = None
@@ -644,7 +645,10 @@ class TradingEngine:
         d = to_ist(bar.ts).date()
         prev = self.last_bar.get(u)
         new_session = prev is None or to_ist(prev.ts).date() != d
-        gap = not new_session and prev is not None and bar.ts - prev.ts != M
+        if not new_session and prev is not None and bar.ts - prev.ts != M:
+            # indicators now span missing minutes: no entries for a while (inv 6)
+            self.gap_until[u] = bar.ts + 15 * M
+        gap = bar.ts < self.gap_until.get(u, bar.ts)
         self.last_bar[u] = bar
         fut = self.fut_bars.get(u, {}).pop(bar.ts, None)
         # bounded memory over a long session: old candles' bookkeeping is dropped
@@ -852,7 +856,10 @@ class TradingEngine:
         self.taken_this_candle[key] = slot.id
         return None
 
-    def _mode_for(self, slot: Slot, row: StrategyRow | None) -> tuple[Mode, tuple[str, ...]]:
+    def _mode_for(
+        self, slot: Slot, row: StrategyRow | None, track: bool = True
+    ) -> tuple[Mode, tuple[str, ...]]:
+        """`track=False` for views (dashboard): no invariant-14 bookkeeping or alerts."""
         now = self.now()
         req = Mode(row.requested_mode) if row else Mode.PAPER
         gate = GateStatus(row.gate_status) if row else GateStatus.NOT_RUN
@@ -874,6 +881,8 @@ class TradingEngine:
         mode, reasons = res.mode, res.reasons
         if mode is Mode.SEMI and self.semi is None:
             mode, reasons = Mode.PAPER, (*reasons, "no SEMI task channel running")
+        if not track:
+            return mode, reasons
         if mode is Mode.LIVE:
             slot.was_live = True
         elif slot.was_live and not slot.live_lost:

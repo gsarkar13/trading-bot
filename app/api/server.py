@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
@@ -28,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import app.strategies.plugins  # noqa: F401 - registers implemented strategies
 from app.ai.advisor import what_if
@@ -110,6 +112,15 @@ def _mask(v: Any) -> str | None:
 
 def create_app(ctx: ApiContext) -> FastAPI:
     app = FastAPI(title="algo", docs_url=None, redoc_url=None, openapi_url=None)
+    # DNS rebinding: a page on evil.example resolving to 127.0.0.1 sends Host: evil.example
+    hosts = [
+        ctx.cfg.dashboard.bind_host,
+        *ctx.cfg.dashboard.extra_bind_hosts,
+        "localhost",
+        "127.0.0.1",
+        "testserver",
+    ]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
     eng, db, cfg, auth = ctx.engine, ctx.db, ctx.cfg, ctx.auth
     table = StrategyTable(db, eng.is_exposed, cfg.instance.instance_id)
 
@@ -131,7 +142,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
             raise HTTPException(403, "real-money actions need a fresh login (password again)")
 
     @app.post("/api/login")
-    def login(body: Pw, response: Response) -> dict[str, Any]:
+    async def login(body: Pw, response: Response) -> dict[str, Any]:
         sid = auth.login(body.password)
         if sid is None:
             raise HTTPException(401, "wrong password, or locked for 5 minutes")
@@ -139,13 +150,13 @@ def create_app(ctx: ApiContext) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/logout")
-    def logout(request: Request, response: Response) -> dict[str, Any]:
+    async def logout(request: Request, response: Response) -> dict[str, Any]:
         auth.logout(request.cookies.get("sid"))
         response.delete_cookie("sid")
         return {"ok": True}
 
     @app.get("/api/me")
-    def me(request: Request) -> dict[str, Any]:
+    async def me(request: Request) -> dict[str, Any]:
         sid = request.cookies.get("sid")
         return {
             "logged_in": auth.valid(sid) is not None,
@@ -240,11 +251,15 @@ def create_app(ctx: ApiContext) -> FastAPI:
         }
 
     @app.get("/api/status")
-    def get_status(_: str = Depends(who)) -> dict[str, Any]:
+    async def get_status(_: str = Depends(who)) -> dict[str, Any]:
         return status()
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket) -> None:
+        origin = socket.headers.get("origin")
+        if origin is not None and urlparse(origin).hostname not in hosts:
+            await socket.close(code=4403)  # another website trying to read our status
+            return
         if auth.valid(socket.cookies.get("sid")) is None:
             await socket.close(code=4401)
             return
@@ -258,12 +273,12 @@ def create_app(ctx: ApiContext) -> FastAPI:
 
     # ------------------------------------------------------------ controls
     @app.post("/api/engine/pause")
-    def pause(by: str = Depends(who)) -> dict[str, Any]:
+    async def pause(by: str = Depends(who)) -> dict[str, Any]:
         eng.pause(by)
         return {"halted": eng.state.halted}
 
     @app.post("/api/engine/resume")
-    def resume(by: str = Depends(who)) -> dict[str, Any]:
+    async def resume(by: str = Depends(who)) -> dict[str, Any]:
         eng.resume(by)
         return {"halted": eng.state.halted}
 
@@ -275,14 +290,14 @@ def create_app(ctx: ApiContext) -> FastAPI:
         return {"positions": n}
 
     @app.post("/api/positions/{uid}/stop")
-    def stop(uid: str, body: StopAction, by: str = Depends(who)) -> dict[str, Any]:
+    async def stop(uid: str, body: StopAction, by: str = Depends(who)) -> dict[str, Any]:
         try:
             return {"stop": eng.adjust_stop(uid, body.action, by)}
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 
     @app.post("/api/ceiling")
-    def ceiling(body: ModeBody, request: Request, by: str = Depends(who)) -> dict[str, Any]:
+    async def ceiling(body: ModeBody, request: Request, by: str = Depends(who)) -> dict[str, Any]:
         if body.mode.is_real_money:
             fresh(request)
         try:
@@ -292,7 +307,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
         return {"ceiling": eng.ceiling.value}
 
     @app.post("/api/arm/request")
-    def arm_request(request: Request, by: str = Depends(who)) -> dict[str, Any]:
+    async def arm_request(request: Request, by: str = Depends(who)) -> dict[str, Any]:
         fresh(request)
         code = eng.arming.request(eng.now(), by)
         summary = eng.arming_summary()
@@ -300,7 +315,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
         return {"code": code, "summary": summary, "expires_s": 120}
 
     @app.post("/api/arm/confirm")
-    def arm_confirm(body: Code, request: Request, by: str = Depends(who)) -> dict[str, Any]:
+    async def arm_confirm(body: Code, request: Request, by: str = Depends(who)) -> dict[str, Any]:
         fresh(request)
         ok = eng.arming.confirm(eng.now(), body.code, by, eng.arming_summary())
         if not ok:
@@ -308,12 +323,14 @@ def create_app(ctx: ApiContext) -> FastAPI:
         return {"armed": True}
 
     @app.post("/api/arm/disarm")
-    def disarm(by: str = Depends(who)) -> dict[str, Any]:
+    async def disarm(by: str = Depends(who)) -> dict[str, Any]:
         eng.arming.disarm(eng.now(), f"by {by}")
         return {"armed": False}
 
     @app.post("/api/breakers/{book}/reset")
-    def reset(book: str, body: Phrase, request: Request, by: str = Depends(who)) -> dict[str, Any]:
+    async def reset(
+        book: str, body: Phrase, request: Request, by: str = Depends(who)
+    ) -> dict[str, Any]:
         fresh(request)
         b = Breakers(db, cfg.risk, book, cfg.instance.instance_id)
         if not b.reset(eng.now(), body.phrase, by):
@@ -359,7 +376,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
         out = []
         for r in table.rows():
             slot = next((s for s in eng.slots if s.id == r.id), None)
-            mode, why = eng._mode_for(slot, r) if slot else (Mode.PAPER, ("no code",))
+            mode, why = eng._mode_for(slot, r, track=False) if slot else (Mode.PAPER, ("no code",))
             out.append(
                 {
                     "id": r.id,
@@ -386,7 +403,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
         return out
 
     @app.get("/api/strategies")
-    def strategies(_: str = Depends(who)) -> list[dict[str, Any]]:
+    async def strategies(_: str = Depends(who)) -> list[dict[str, Any]]:
         return rows()
 
     def change(fn: Callable[[], Any]) -> list[dict[str, Any]]:
@@ -397,11 +414,11 @@ def create_app(ctx: ApiContext) -> FastAPI:
         return rows()
 
     @app.post("/api/strategies/{sid}/active")
-    def set_active(sid: str, body: Active, by: str = Depends(who)) -> list[dict[str, Any]]:
+    async def set_active(sid: str, body: Active, by: str = Depends(who)) -> list[dict[str, Any]]:
         return change(lambda: table.set_active(sid, body.active, eng.now(), by))
 
     @app.post("/api/strategies/{sid}/mode")
-    def set_mode(
+    async def set_mode(
         sid: str, body: ModeBody, request: Request, by: str = Depends(who)
     ) -> list[dict[str, Any]]:
         if body.mode.is_real_money:
@@ -409,12 +426,12 @@ def create_app(ctx: ApiContext) -> FastAPI:
         return change(lambda: table.set_mode(sid, body.mode, eng.now(), by))
 
     @app.post("/api/strategies/{sid}/move")
-    def move(sid: str, body: Move, by: str = Depends(who)) -> list[dict[str, Any]]:
+    async def move(sid: str, body: Move, by: str = Depends(who)) -> list[dict[str, Any]]:
         return change(lambda: table.move(sid, body.up, eng.now(), by))
 
     # ------------------------------------------------------------ data views
     @app.get("/api/events")
-    def events(
+    async def events(
         category: str | None = None, limit: int = 200, _: str = Depends(who)
     ) -> list[dict[str, Any]]:
         q = select(EventLog).order_by(EventLog.id.desc()).limit(min(limit, 1000))
@@ -432,7 +449,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
             ]
 
     @app.get("/api/signals")
-    def signals(limit: int = 100, _: str = Depends(who)) -> list[dict[str, Any]]:
+    async def signals(limit: int = 100, _: str = Depends(who)) -> list[dict[str, Any]]:
         with Session(db) as s:
             sigs = list(
                 s.scalars(select(SignalRow).order_by(SignalRow.id.desc()).limit(min(limit, 500)))
@@ -468,7 +485,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
         ]
 
     @app.get("/api/trades")
-    def trades(limit: int = 200, _: str = Depends(who)) -> list[dict[str, Any]]:
+    async def trades(limit: int = 200, _: str = Depends(who)) -> list[dict[str, Any]]:
         with Session(db) as s:
             ts = list(s.scalars(select(Trade).order_by(Trade.id.desc()).limit(min(limit, 2000))))
         return [
@@ -494,11 +511,11 @@ def create_app(ctx: ApiContext) -> FastAPI:
         ]
 
     @app.get("/api/books")
-    def books(_: str = Depends(who)) -> dict[str, Any]:
+    async def books(_: str = Depends(who)) -> dict[str, Any]:
         return {"books": book_stats(db), "ai_what_if": what_if(db)}
 
     @app.get("/api/journal")
-    def journal(_: str = Depends(who)) -> list[dict[str, Any]]:
+    async def journal(_: str = Depends(who)) -> list[dict[str, Any]]:
         with Session(db) as s:
             js = list(
                 s.scalars(select(JournalEOD).order_by(JournalEOD.trading_date.desc()).limit(30))
@@ -515,7 +532,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
         ]
 
     @app.get("/api/candles")
-    def candles(
+    async def candles(
         u: str = "NIFTY", tf: int = 1, days: int = 2, _: str = Depends(who)
     ) -> dict[str, Any]:
         if u not in cfg.recorder.underlyings or tf not in (1, 15):
@@ -552,7 +569,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
         }
 
     @app.get("/api/settings")
-    def settings(_: str = Depends(who)) -> dict[str, Any]:
+    async def settings(_: str = Depends(who)) -> dict[str, Any]:
         sec = Secrets()
         keys = {
             k: _mask(getattr(sec, k))
@@ -597,12 +614,12 @@ def create_app(ctx: ApiContext) -> FastAPI:
         app.mount("/assets", StaticFiles(directory=STATIC / "assets"), name="assets")
 
         @app.get("/")
-        def index() -> FileResponse:
+        async def index() -> FileResponse:
             return FileResponse(STATIC / "index.html")
     else:
 
         @app.get("/")
-        def no_ui() -> JSONResponse:
+        async def no_ui() -> JSONResponse:
             return JSONResponse({"error": "dashboard not built; see docs/DASHBOARD.md"})
 
     return app

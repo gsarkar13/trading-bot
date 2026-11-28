@@ -295,3 +295,23 @@ def test_all_order_operations_share_one_rate_limit(migrated_engine: Engine, tmp_
     assert all(
         r.limiter is eng.paper_limiter for n, r in eng.routers.items() if n.startswith("paper:")
     )
+
+
+def test_candle_gap_blocks_entries_for_fifteen_minutes(
+    migrated_engine: Engine, tmp_path: Path
+) -> None:
+    activate(migrated_engine)
+    h = Harness(migrated_engine, tmp_path)
+    for m in (5, 21):
+        h.strategy.script[ist(10, m).astimezone(dt.UTC)] = SIG
+
+    async def go() -> None:
+        await h.minute(10, 0, 24000)
+        h.at(ist(10, 4, 59))
+        for m in range(5, 22):  # 10:01-10:04 missing, then continuous
+            await h.minute(10, m, 24000)
+
+    asyncio.run(go())
+    outs = outcomes(h)
+    assert "gap in candles" in outs[0]  # 10:05, right after the gap
+    assert not outs[1].startswith("BLOCKED: gap")  # 10:21, window over

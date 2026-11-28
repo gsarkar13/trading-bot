@@ -64,6 +64,9 @@ What exists now (details: docs/ARCHITECTURE.md, docs/DASHBOARD.md, DECISIONS D52
       10 simulated days, ~225k ticks, 190 signals, peak RSS **82 MB**, +0.28 MB/day.
       Not included: the Fyers websocket SDK and uvicorn threads; measure on the PC with
       a real session (Task Manager) before Phase 3.
+- [x] fresh-eyes review (2026-11-28): 11 confirmed + 8 plausible findings, all fixed with
+      tests except SEMI re-tracking after a restart (D60); soak re-run after the fixes:
+      3 days, peak 78 MB
 - [ ] not verified here (needs the trader's PC and a market day): a full live paper
       session end to end with real Fyers ticks, the dashboard on the phone, Telegram.
 
