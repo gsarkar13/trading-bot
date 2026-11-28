@@ -32,6 +32,7 @@ class AlreadyRunning(RuntimeError):
 class InstanceLock:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.pid_path = path.with_suffix(".pid")
         self._fh: IO[str] | None = None
 
     def acquire(self) -> None:
@@ -57,6 +58,9 @@ class InstanceLock:
         fh.truncate()
         fh.write(f"{os.getpid()}\n")
         fh.flush()
+        # Windows locks the lock file's bytes against reading too: the watchdog reads the
+        # PID from this separate file instead
+        self.pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
         self._fh = fh
 
     def release(self) -> None:

@@ -228,6 +228,7 @@ class TradingEngine:
         self.positions: dict[str, LivePos] = {}  # active positions
         self._recent: dict[str, LivePos] = {}  # closed, still in their grace period
         self._booked: dict[str, Decimal] = {}  # net P&L booked per position
+        self._step_errors: dict[str, dt.datetime] = {}
         self.breakers: dict[str, Breakers] = {}
         self.depth: dict[InstrumentKey, Depth] = {}
         self.vix: float | None = None
@@ -521,22 +522,47 @@ class TradingEngine:
         """Call about once a second: closes candles, runs order timers, square-off,
         settles closed trades, checks foreign orders and writes the heartbeat."""
         now = self.now()
-        for u, b in list(self.builders.items()):
-            for bar in b.close_until(now):
-                await self.on_bar(u, bar)
-        for u, fb in self.fut_builders.items():
-            for bar in fb.close_until(now):
-                self.fut_bars.setdefault(u, {})[bar.ts] = bar
-        for pb in self.paper.values():
-            pb.advance()
-        if self.semi is not None:
-            self.semi.tick()
-        for r in list(self.routers.values()):
-            await r.tick()
-        await self._square_off(now)
-        self._settle(now)
-        await self._foreign_check(now)
-        self._heartbeat(now)
+
+        async def closes() -> None:
+            for u, b in list(self.builders.items()):
+                for bar in b.close_until(now):
+                    await self.on_bar(u, bar)
+            for u, fb in self.fut_builders.items():
+                for bar in fb.close_until(now):
+                    self.fut_bars.setdefault(u, {})[bar.ts] = bar
+
+        async def brokers() -> None:
+            for pb in self.paper.values():
+                pb.advance()
+            if self.semi is not None:
+                self.semi.tick()
+
+        steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+            ("candles", closes),
+            ("brokers", brokers),
+        ]
+        for name, r in list(self.routers.items()):  # one bad book can't stall the others
+            steps.append((f"orders {name}", r.tick))
+        steps += [
+            ("square-off", lambda: self._square_off(now)),
+            ("settle", lambda: _sync(self._settle, now)),
+            ("foreign-order scan", lambda: self._foreign_check(now)),
+            ("heartbeat", lambda: _sync(self._heartbeat, now)),
+        ]
+        for name, fn in steps:
+            try:
+                await fn()
+            except Exception as e:
+                log.exception("timer step %s failed", name)
+                key = f"{name}:{type(e).__name__}"
+                last = self._step_errors.get(key)
+                if last is None or (now - last).total_seconds() >= 60:  # at most 1/min
+                    self._step_errors[key] = now
+                    self.alerts.emit(
+                        "critical",
+                        "ENGINE",
+                        f"timer step '{name}' failed: {type(e).__name__}; other steps continue",
+                    )
 
     # ------------------------------------------------------------ candles
     async def on_bar(self, u: str, bar: Bar) -> None:
@@ -1159,6 +1185,11 @@ class TradingEngine:
                 for p in self.positions.values()
             ],
         }
+
+
+async def _sync(fn: Callable[[dt.datetime], None], now: dt.datetime) -> None:
+    """Lets a synchronous step sit in the timer's list of awaitables."""
+    fn(now)
 
 
 def _jsonable(d: dict[str, object]) -> dict[str, object]:

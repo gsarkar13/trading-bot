@@ -196,10 +196,12 @@ class Watchdog:
         return head + "\n" + "\n".join(lines)
 
     def _engine_pid(self) -> int | None:
-        try:
-            return int(self.lock_path.read_text(encoding="utf-8").strip().splitlines()[0])
-        except (OSError, ValueError, IndexError):
-            return None
+        for f in (self.lock_path.with_suffix(".pid"), self.lock_path):
+            try:
+                return int(f.read_text(encoding="utf-8").strip().splitlines()[0])
+            except (OSError, ValueError, IndexError):
+                continue
+        return None
 
     # ------------------------------------------------------------ loop
     async def tick(self) -> None:
@@ -218,10 +220,16 @@ async def _poll(wd: Watchdog, tg: object) -> None:  # pragma: no cover - network
     while True:
         try:
             for u in await tg.get_updates(offset):
-                offset = int(u["update_id"]) + 1
-                await wd.bot.handle(u)
+                offset = int(u["update_id"]) + 1  # confirmed even if handling fails
+                try:
+                    await wd.bot.handle(u)
+                except Exception:  # one odd message must never stop /flatten (inv 11)
+                    log.exception("could not handle a Telegram update")
         except TelegramError as e:
             log.warning("telegram: %s", e)
+            await asyncio.sleep(5)
+        except Exception:
+            log.exception("telegram polling error")
             await asyncio.sleep(5)
 
 
@@ -234,22 +242,13 @@ async def _ticker(wd: Watchdog) -> None:  # pragma: no cover - loop
 def main() -> int:  # pragma: no cover - needs Telegram
     from app.config.loader import REPO_ROOT, load_config
     from app.config.secrets import Secrets
+    from app.core.logsetup import setup_logging
     from app.db.session import make_engine
     from app.services.recorder import is_trading_day
     from app.telegram.api import TelegramApi
     from app.tools.flatten import _fyers_quote_fn
 
-    Path("logs").mkdir(exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(
-                Path("logs") / f"watchdog-{dt.datetime.now(IST):%Y%m%d}.log", encoding="utf-8"
-            ),
-        ],
-    )
+    setup_logging(Path("logs") / f"watchdog-{dt.datetime.now(IST):%Y%m%d}.log")
     cfg = load_config()
     sec = Secrets()
     if not cfg.telegram.enabled or sec.telegram_bot_token is None:

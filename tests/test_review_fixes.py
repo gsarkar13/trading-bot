@@ -7,6 +7,7 @@ import asyncio
 import datetime as dt
 import itertools
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
@@ -129,3 +130,77 @@ def test_review7_refused_modify_cancels_and_replans() -> None:
     assert any(isinstance(x, Cancel) and x.tag == prot.tag for x in cmds)
     after = m.on_cancelled(t0, prot.tag)  # broker confirms the cancel
     assert any(isinstance(x, Place) and x.side is Side.SELL for x in after)  # real exit sent
+
+
+def test_review2_bot_token_never_reaches_a_log(tmp_path: Path) -> None:
+    import logging
+
+    from app.core.logsetup import setup_logging
+
+    tok = "123456789:" + "A" * 35
+    log_file = tmp_path / "w.log"
+    setup_logging(log_file)
+    logging.getLogger("httpx2").warning("HTTP Request: POST https://api.telegram.org/bot%s/x", tok)
+    logging.getLogger("app").info("url https://api.telegram.org/bot" + tok + "/getUpdates")
+    for h in logging.getLogger().handlers:
+        h.flush()
+    text = log_file.read_text()
+    assert tok not in text and "[REDACTED]" in text
+    assert logging.getLogger("httpx2").level == logging.WARNING
+
+
+def test_review3_photo_from_owner_does_not_crash_the_bot() -> None:
+    from app.telegram.bot import Bot
+    from app.telegram.link import EngineLink
+
+    sent: list[str] = []
+
+    class Tg:
+        async def send(self, chat_id: int, text: str, buttons: object = None) -> None:
+            sent.append(text)
+
+        async def answer(self, callback_id: str, text: str = "") -> None:
+            pass
+
+    async def flat() -> str:
+        return ""
+
+    bot = Bot(42, Tg(), EngineLink(1, Path("/nonexistent")), Clock(), flat)
+    asyncio.run(bot.handle({"update_id": 1, "message": {"chat": {"id": 42}, "photo": [{}]}}))
+    assert sent and "text commands" in sent[0]
+
+
+def test_windows_pid_file_is_separate_from_the_lock(tmp_path: Path) -> None:
+    import os
+
+    from app.engine.instance import InstanceLock
+
+    lk = InstanceLock(tmp_path / "engine-LAP1.lock")
+    lk.acquire()
+    try:
+        assert (tmp_path / "engine-LAP1.pid").read_text().strip() == str(os.getpid())
+    finally:
+        lk.release()
+
+
+def test_review9_one_failing_timer_step_does_not_stop_the_others(
+    migrated_engine: Engine, tmp_path: Path
+) -> None:
+    from tests.engine_harness import Harness, activate, ist
+
+    activate(migrated_engine)
+    h = Harness(migrated_engine, tmp_path)
+    beats: list[dt.datetime] = []
+
+    async def boom() -> None:
+        raise RuntimeError("bad book")
+
+    h.engine._foreign_check = lambda now: boom()  # type: ignore[method-assign]
+    h.engine._heartbeat = lambda now: beats.append(now)  # type: ignore[method-assign]
+    h.at(ist(10, 0))
+    asyncio.run(h.engine.on_timer())
+    h.at(ist(10, 0, 1))
+    asyncio.run(h.engine.on_timer())
+    assert len(beats) == 2  # heartbeat still written
+    crit = [a for a in h.alerts.recent if a.level == "critical"]
+    assert len(crit) == 1 and "foreign-order scan" in crit[0].message  # throttled

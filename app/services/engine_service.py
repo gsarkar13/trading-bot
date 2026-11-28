@@ -319,22 +319,13 @@ def main() -> int:  # pragma: no cover - needs a live Fyers login
     from app.config.loader import load_config
     from app.config.schema import Ema200HammerParams
     from app.config.secrets import Secrets
+    from app.core.logsetup import setup_logging
     from app.core.timeutil import ist_dt
     from app.db.session import make_engine
     from app.services.recorder import Recorder, is_trading_day, save_master
     from app.tools.init_db import main as init_db
 
-    Path("logs").mkdir(exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(
-                Path("logs") / f"engine-{dt.datetime.now(IST):%Y%m%d}.log", encoding="utf-8"
-            ),
-        ],
-    )
+    setup_logging(Path("logs") / f"engine-{dt.datetime.now(IST):%Y%m%d}.log")
     cfg = load_config()
     today = dt.datetime.now(IST).date()
     ok, why = is_trading_day(today, REPO_ROOT / "config" / "calendar")

@@ -99,6 +99,9 @@ class Bot:
             await self.say(f"Refused: {e}")
 
     async def on_text(self, text: str) -> None:
+        if not text:  # a photo, sticker or voice note: nothing to do
+            await self.say("I only understand text commands.\n" + HELP)
+            return
         low = text.lower()
         if "auth_code=" in text or "code=200" in text:
             if self.finish_login is None:
