@@ -43,10 +43,13 @@ class OrderStore(Protocol):
     fills tables; tests use an in-memory one."""
 
     def save_new(self, m: PositionMachine, cmd: Place, key: InstrumentKey) -> None: ...
-    def save_status(self, tag: str, status: OrderStatus, filled: int, reason: str) -> None: ...
+    def save_status(
+        self, tag: str, status: OrderStatus, filled: int, reason: str, purpose: str | None = None
+    ) -> None: ...
     def save_fill(
         self, tag: str, cum_filled: int, price: Decimal | None, at: dt.datetime
     ) -> None: ...
+    def sync_position(self, m: PositionMachine) -> None: ...
 
 
 @dataclass
@@ -64,10 +67,17 @@ class MemoryStore:
             }
         self.events.append((cmd.tag, "NEW", "stored before send"))
 
-    def save_status(self, tag: str, status: OrderStatus, filled: int, reason: str) -> None:
+    def save_status(
+        self, tag: str, status: OrderStatus, filled: int, reason: str, purpose: str | None = None
+    ) -> None:
         if tag in self.orders:
             self.orders[tag]["status"] = status.value
+            if purpose:
+                self.orders[tag]["purpose"] = purpose
         self.events.append((tag, status.value, reason))
+
+    def sync_position(self, m: PositionMachine) -> None:
+        self.events.append((m.position_uid, m.state.value, f"long {m.long_qty}"))
 
     def save_fill(self, tag: str, cum_filled: int, price: Decimal | None, at: dt.datetime) -> None:
         self.events.append((tag, f"FILL {cum_filled}@{price}", at.isoformat()))
@@ -186,9 +196,14 @@ class OrderRouter:
         if res.outcome != "ACCEPTED":
             # e.g. cancelling a stop that already filled: the fill event settles it
             log.info("%s %s not accepted: %s", type(c).__name__, c.tag, res.message)
+        else:
+            o = m.orders[c.tag]
+            what = "modify requested" if isinstance(c, Modify) else "cancel requested"
+            self.store.save_status(c.tag, o.status, o.filled, what, purpose=o.purpose)
 
     async def _feed(self, t: _Tracked, cmds: list[Command]) -> None:
         self._check(t)
+        self.store.sync_position(t.machine)
         for c in cmds:
             await self._one(t, c)
 
