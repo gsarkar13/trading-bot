@@ -11,6 +11,10 @@ dependencies = [
     "pyyaml>=6.0,<7",
     "fyers-apiv3>=3.3,<4",
     "cryptography>=43",
+    "anthropic>=1.17,<2",  # AI slot (advisory only); brings httpx2, used for other providers
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.32,<1",
+    "websockets>=13",  # uvicorn's WebSocket support (dashboard live push)
 ]
 
 [project.optional-dependencies]
@@ -20,6 +24,7 @@ dev = [
     "pytest>=8.3",
     "hypothesis>=6.120",
     "types-PyYAML",
+    "httpx>=0.27",  # FastAPI TestClient
     "pandas>=2.2",  # golden tests only; never imported by engine/recorder (P7)
 ]
 

@@ -264,13 +264,24 @@ class AISlot(_Strict):
     model: str
     timeout_ms: PosInt = 1500
     daily_call_cap: PosInt = 200
+    # USD per million tokens, for the cost tracker (section 11). 0 = unknown / free tier.
+    price_in_usd_per_m: NonNegFloat = 0.0
+    price_out_usd_per_m: NonNegFloat = 0.0
+    base_url: str | None = Field(
+        default=None, description="Only for ollama (e.g. http://127.0.0.1:11434)."
+    )
 
 
 class AIConfig(_Strict):
     enabled: bool = False
-    slot1: AISlot = AISlot(provider="gemini", model="UNSET-choose-in-phase-2")
-    # Model IDs are chosen from each provider's docs in Phase 2 and recorded in DECISIONS.md.
-    slot2: AISlot = AISlot(provider="anthropic", model="UNSET-choose-in-phase-2")
+    # Model IDs chosen from each provider's docs on 2026-11-28 (DECISIONS.md D52).
+    slot1: AISlot = AISlot(provider="gemini", model="gemini-3.5-flash-lite")
+    slot2: AISlot = AISlot(
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        price_in_usd_per_m=0.10,
+        price_out_usd_per_m=0.50,
+    )
 
 
 class TelegramConfig(_Strict):

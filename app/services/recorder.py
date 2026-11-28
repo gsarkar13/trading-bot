@@ -273,6 +273,10 @@ class Recorder:
         self.chain_disabled = False
         self.loop_errors = 0
         self.keys = self._tick_keys()
+        # Extra consumers of every tick (the trading engine). Called on the event loop.
+        self.listeners: list[Callable[[TickData], None]] = []
+        self.stream: TickStream | None = None
+        self._extra: set[InstrumentKey] = set()
 
     def _tick_keys(self) -> list[InstrumentKey]:
         keys = [InstrumentKey.index(u) for u in self.underlyings]
@@ -287,7 +291,21 @@ class Recorder:
 
         return cb
 
+    def watch(self, keys: list[InstrumentKey]) -> None:
+        """Stream more instruments for the listeners (not recorded as ticks or candles)."""
+        new = [k for k in keys if k not in self._extra and k not in self.builders]
+        if not new:
+            return
+        self._extra.update(new)
+        if self.stream is not None:
+            self.stream.subscribe([self.smap.symbol(k) for k in new])
+
     def _accept(self, t: TickData) -> None:
+        for fn in self.listeners:
+            try:
+                fn(t)
+            except Exception:
+                log.exception("tick listener failed")
         if t.key not in self.builders:
             return
         self._pending.append(t)
@@ -362,8 +380,11 @@ class Recorder:
             await asyncio.sleep(min(30.0, (self.start_at - self.now()).total_seconds()))
         self.builders = {k: CandleBuilder() for k in self.keys}
         stream = self._stream_factory(self._on_tick(loop), self._on_status)
+        self.stream = stream
         stream.start()
         stream.subscribe([self.smap.symbol(k) for k in self.keys])
+        if self._extra:
+            stream.subscribe([self.smap.symbol(k) for k in self._extra])
         next_chain = time.monotonic()
         next_stale = time.monotonic() + self.stale_after_s
         try:
@@ -516,6 +537,19 @@ def _expiry_epochs(resp: dict[str, Any]) -> list[tuple[dt.date, int]]:
             ep = int(e["expiry"])
             out.append((dt.datetime.fromtimestamp(ep, IST).date(), ep))
     return out
+
+
+def calendar_problem(d: dt.date, calendar_dir: Path) -> str | None:
+    """Section 14.5: trading is refused without a checked calendar for this year."""
+    f = calendar_dir / f"nse_{d.year}.yaml"
+    if not f.exists():
+        return f"no NSE calendar for {d.year} (config/calendar/README.md)"
+    import yaml
+
+    data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+    if not str(data.get("verified_by") or "").strip():
+        return f"nse_{d.year}.yaml is not marked verified_by anyone"
+    return None
 
 
 def is_trading_day(d: dt.date, calendar_dir: Path) -> tuple[bool, str]:

@@ -392,7 +392,35 @@ processing latency unpredictable exactly when the market is busy.
 - **Frontend:** React + Vite + TypeScript, built to static files. Decision on how built
   files reach the server is in DECISIONS.md (D8).
 
+### 10.1 As built in Phase 2 (2026-11-28)
+
+Two processes, not three: the recorder runs **inside** the engine process on the same
+Fyers websocket (D55), which halves memory on the 1 GB box.
+
+| Process | Module | Does |
+|---|---|---|
+| engine | `app.services.engine_service` (started by `app.tools.trade_day`) | recorder + `TradingEngine` + dashboard (uvicorn, same event loop) + AI side channel |
+| watchdog | `app.services.watchdog` | Telegram polling and alert relay from `event_log`, heartbeat watch, login reminder, emergency flatten (stops a hung engine via its lock-file PID, then `app.tools.flatten`) |
+
+Inside the engine, per completed 1-minute candle: strategy exits → strategy signals in
+priority order → checks (switch, research-only underlying, time guards, data gate,
+contract + liquidity, sizing) → the **shadow** book (`SHADOW:<id>`, unconstrained, gate
+statistics) and the **portfolio** book (`PAPER`/`REAL`: mode, halt, LIVE-lost, shared
+slot/SUPERSEDED, one per underlying, concurrency, cooldown, breakers) → `PositionMachine`
++ `OrderRouter` on the paper / SEMI / live broker. Exits run on every index tick
+(strategy stop/target) and on the broker (backstop SL-LMT). The timer (1 s) closes
+candles, runs order timers, square-off, settlement into the ledger, the foreign-order
+scan (60 s) and the heartbeat (5 s).
+
+Code map: `app/engine/` (oms, router, engine, reconcile, store, risk, modes, arming,
+instance, contracts, sizing, history, journal, alerts, strategy_table), `app/brokers/`
+(paper, semi), `app/ai/`, `app/api/` (+ built UI in `app/api/static`, source in
+`frontend/`), `app/telegram/`, `app/tools/` (flatten, soak, trade_day, set_password).
+
 ## 11. How the invariants map to code
+
+Phase 2 status: all 18 are enforced and tested; the test for each is listed in
+`docs/INVARIANT_TESTS.md`. The table below is the original plan.
 
 | Inv. | Where it will be enforced | Phase |
 |---|---|---|

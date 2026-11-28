@@ -38,6 +38,16 @@ class RateLimiter:
             waits.append(60 - (now - self._calls[-self.per_minute]))
         return max(waits)
 
+    def recent(self) -> dict[str, int]:
+        """For the dashboard's order-rate meter."""
+        now = self._clock()
+        return {
+            "last_second": sum(1 for t in self._calls if now - t < 1),
+            "last_minute": sum(1 for t in self._calls if now - t < 60),
+            "per_second_limit": self.per_second,
+            "per_minute_limit": self.per_minute,
+        }
+
     def record(self) -> None:
         self._calls.append(self._clock())
 

@@ -235,3 +235,20 @@ class InstrumentKey(BaseModel):
     @classmethod
     def continuous_future(cls, underlying: str) -> InstrumentKey:
         return cls(kind="FUTC", underlying=underlying)
+
+    @classmethod
+    def from_canonical(cls, canon: str) -> InstrumentKey:
+        """Inverse of `canonical`."""
+        kind, *rest = canon.split("|")
+        if kind == "OPT":
+            u, exp, strike, ot = rest
+            return cls.option(u, dt.date.fromisoformat(exp), strike, OptionType(ot))
+        if kind == "FUT":
+            return cls.future(rest[0], dt.date.fromisoformat(rest[1]))
+        if kind == "EQ":
+            return cls.equity(rest[1], rest[2])
+        if kind == "FUTC":
+            return cls.continuous_future(rest[0])
+        if kind == "INDEX":
+            return cls.index(rest[0])
+        raise ValueError(f"not a canonical key: {canon}")

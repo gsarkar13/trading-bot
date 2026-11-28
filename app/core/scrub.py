@@ -10,7 +10,8 @@ import re
 
 PATTERNS: dict[str, re.Pattern[str]] = {
     "jwt": re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*"),
-    "telegram_bot_token": re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b"),
+    # also inside the Bot API URL: https://api.telegram.org/bot<id>:<secret>/getUpdates
+    "telegram_bot_token": re.compile(r"(?:\b|(?<=bot))\d{8,10}:[A-Za-z0-9_-]{35}\b"),
     "anthropic_key": re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}"),
     "openai_key": re.compile(r"\bsk-[A-Za-z0-9]{32,}\b"),
     "google_api_key": re.compile(r"AIza[0-9A-Za-z_-]{35}"),

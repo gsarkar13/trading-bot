@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import abc
 import datetime as dt
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
@@ -181,6 +181,20 @@ class PlaceResult(_Frozen):
     message: str | None = None
 
 
+class BrokerEvent(_Frozen):
+    """What a broker reports about one of our orders (order socket, polling or paper sim).
+
+    `cum_filled` is the order's TOTAL filled quantity so far, as brokers report it."""
+
+    kind: Literal["ack", "fill", "cancelled", "rejected"]
+    client_tag: str
+    broker_order_id: str | None
+    at: dt.datetime
+    cum_filled: int = 0
+    avg_price: Decimal | None = None
+    reason: str | None = None
+
+
 # ----------------------------------------------------------------- errors
 class AdapterError(Exception):
     """Base class. Messages must never contain secrets."""
@@ -237,7 +251,20 @@ class BaseDataProvider(BaseProvider):
 
 
 class BaseExecutionBroker(BaseProvider):
-    """Place / modify / cancel plus read-only account state."""
+    """Place / modify / cancel plus read-only account state.
+
+    Order updates are pushed to the sink set with `set_event_sink` (never awaited by the
+    broker), so the engine sees acks, fills, cancels and rejections as events."""
+
+    supports_modify_to_exit: bool = False  # can an SL-LMT be modified into a plain LMT?
+    _sink: Callable[[BrokerEvent], None] | None = None
+
+    def set_event_sink(self, sink: Callable[[BrokerEvent], None]) -> None:
+        self._sink = sink
+
+    def _emit(self, ev: BrokerEvent) -> None:
+        if self._sink is not None:
+            self._sink(ev)
 
     @abc.abstractmethod
     async def place_order(self, req: OrderRequest) -> PlaceResult: ...
