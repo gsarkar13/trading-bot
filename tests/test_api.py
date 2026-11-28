@@ -105,7 +105,8 @@ def test_flatten_and_stop_buttons(migrated_engine: Engine, tmp_path: Path) -> No
 def test_strategies_table_and_settings_never_leak_keys(
     migrated_engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("ALGO_ANTHROPIC_API_KEY", "sk-ant-test-0000000000000000wxyz")
+    fake = "fake-" + "0" * 16 + "wxyz"  # not key-shaped, so the repo scan stays clean
+    monkeypatch.setenv("ALGO_ANTHROPIC_API_KEY", fake)
     _, c = setup(migrated_engine, tmp_path)
     login(c)
     rows = c.get("/api/strategies").json()
