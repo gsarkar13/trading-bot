@@ -90,7 +90,7 @@ How to read it:
 - Real option prices (layer 3). None are recorded yet.
 - That Strategy 1 is better than the baseline. Its interval is far too wide.
 
-## Questions for you
+## Questions for you (answered 2026-11-28: B1 = research only, B2 = keep 40; D50, D51)
 
 - **B1. BANKNIFTY:** (a) keep it in the research books, but stop treating it as tradable at
   this capital (it gets skipped for size anyway); or (b) test a cheaper strike rule for

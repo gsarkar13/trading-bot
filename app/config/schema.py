@@ -64,6 +64,10 @@ class LossLimit(_Strict):
 
 class RiskConfig(_Strict):
     capital_inr: Decimal = Decimal("50000")
+    # Underlyings that paper/real trading may open positions in (enforced from Phase 2).
+    # Backtests still study every underlying a strategy lists. BANKNIFTY is research-only
+    # at this capital: 1 ATM lot (~Rs 42,000) exceeds the premium cap (DECISIONS.md D50).
+    tradable_underlyings: tuple[str, ...] = ("NIFTY",)
     segment_allocation: SegmentAllocation = SegmentAllocation()
     daily_loss: LossLimit = LossLimit(pct_of_capital=3)
     weekly_loss: LossLimit = LossLimit(pct_of_capital=8)

@@ -148,3 +148,10 @@ def test_trade_config_hash_covers_risk_and_params() -> None:
     data["telegram"]["mute_paper_trade_alerts"] = True
     assert trade_config_hash(PlatformConfig.model_validate(data), "pdh_pdl_breakout") == h
     assert trade_config_hash(base, "ema200_hammer_rvol_oi") != h
+
+
+def test_banknifty_research_only_by_default() -> None:
+    cfg = load_config((DEFAULT_FILES[0],))
+    assert cfg.risk.tradable_underlyings == ("NIFTY",)  # D50
+    assert "BANKNIFTY" in cfg.strategy_params("pdh_pdl_breakout").underlyings  # still studied
+    assert cfg.gate.min_paper_trades == 40  # D51
