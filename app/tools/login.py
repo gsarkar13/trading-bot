@@ -18,10 +18,49 @@ import sys
 from app.adapters.fyers import auth
 from app.adapters.fyers.session import VAULT_KEY, open_vault
 from app.config.loader import load_config
+from app.config.schema import PlatformConfig
 from app.config.secrets import Secrets
 from app.core.timeutil import IST
+from app.core.vault import Vault
 from app.db.models import LoginSession
 from app.db.session import make_engine, make_session_factory
+
+
+def finish_login(
+    cfg: PlatformConfig,
+    sec: Secrets,
+    pasted: str,
+    state: str | None,
+    vault: Vault | None = None,
+) -> dt.datetime:
+    """Exchange the pasted redirect (or bare code) for a token ON THIS MACHINE, store it
+    encrypted, record the login. Returns the expiry. Used by this tool and Telegram."""
+    assert sec.fyers_app_id and sec.fyers_app_secret and sec.fyers_redirect_uri
+    app_id = sec.fyers_app_id.get_secret_value()
+    vault = vault or open_vault(sec)
+    code = auth.parse_redirect(pasted, state)
+    token = auth.exchange_code(
+        app_id, sec.fyers_app_secret.get_secret_value(), code, sec.fyers_redirect_uri
+    )
+    now = dt.datetime.now(dt.UTC)
+    stored = auth.StoredToken(token, app_id, now, auth.token_expiry(now))
+    vault.put(VAULT_KEY, stored.to_json())
+    engine = make_engine(cfg.database.url, cfg.database.sqlite_busy_timeout_ms)
+    with make_session_factory(engine)() as s:
+        s.add(
+            LoginSession(
+                provider="fyers",
+                purpose="data",
+                instance_id=cfg.instance.instance_id,
+                trading_date=now.astimezone(IST).date(),
+                obtained_at=now,
+                expires_at=stored.expires_at,
+                status="VALID",
+                token_fingerprint=hashlib.sha256(token.encode()).hexdigest()[-8:],
+            )
+        )
+        s.commit()
+    return stored.expires_at
 
 
 def main() -> int:
@@ -44,34 +83,13 @@ def main() -> int:
     )
     pasted = input("> ")
     try:
-        code = auth.parse_redirect(pasted, state)
-        token = auth.exchange_code(
-            app_id, sec.fyers_app_secret.get_secret_value(), code, sec.fyers_redirect_uri
-        )
+        expires = finish_login(cfg, sec, pasted, state, vault)
     except auth.LoginError as e:
         print(f"Login failed: {e}")
         return 1
-    now = dt.datetime.now(dt.UTC)
-    stored = auth.StoredToken(token, app_id, now, auth.token_expiry(now))
-    vault.put(VAULT_KEY, stored.to_json())
-    engine = make_engine(cfg.database.url, cfg.database.sqlite_busy_timeout_ms)
-    with make_session_factory(engine)() as s:
-        s.add(
-            LoginSession(
-                provider="fyers",
-                purpose="data",
-                instance_id=cfg.instance.instance_id,
-                trading_date=now.astimezone(IST).date(),
-                obtained_at=now,
-                expires_at=stored.expires_at,
-                status="VALID",
-                token_fingerprint=hashlib.sha256(token.encode()).hexdigest()[-8:],
-            )
-        )
-        s.commit()
     print(
         f"\nLogged in. Token saved encrypted; valid until "
-        f"{stored.expires_at.astimezone(IST):%Y-%m-%d %H:%M} IST."
+        f"{expires.astimezone(IST):%Y-%m-%d %H:%M} IST."
     )
     return 0
 

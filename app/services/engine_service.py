@@ -25,13 +25,14 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import app.strategies.plugins  # noqa: F401 - registers the implemented strategies
 from app.adapters.base import AuthExpiredError, InstrumentInfo, InstrumentMappingError, TickData
 from app.adapters.fyers.symbols import SymbolMap
 from app.ai.advisor import Advisor
 from app.brokers.paper import Depth, PaperBroker, PaperConfig
+from app.brokers.semi import SemiBroker, SemiTask
 from app.config.loader import REPO_ROOT, trade_config_hash
 from app.config.schema import PlatformConfig
 from app.core.hostchecks import ntp_offset_ms, static_ip_ok
@@ -43,6 +44,7 @@ from app.engine.engine import Health, Slot, TradingEngine
 from app.engine.history import DbHistory, warmup_views
 from app.engine.instance import AlreadyRunning, InstanceLock
 from app.engine.journal import write_journal
+from app.engine.oms import Alert
 from app.research.costs import ChargesTable
 from app.strategies.registry import get_plugin
 
@@ -167,6 +169,25 @@ class EngineService:
             subscribe=lambda k: self.rec.watch([k]),
             health=self.health,
             on_signal=self.advisor.submit if self.advisor else None,
+        )
+
+        # SEMI: order tasks go out as alerts (Telegram via the watchdog, and the dashboard)
+        def on_task(t: SemiTask, ev: str) -> None:
+            urgent = ev in ("stop_requested", "exit_requested", "escalate")
+            level: Literal["info", "warn"] = "warn" if urgent else "info"
+            self.alerts.emit(
+                level, "SEMI", f"{t.uid} {ev}: " + t.message(), {"uid": t.uid, "event": ev}
+            )
+
+        def on_alert(a: Alert) -> None:
+            self.alerts.emit(a.level, "SEMI", a.message)
+
+        eng.semi = SemiBroker(
+            eng.instruments,
+            self.now,
+            on_task,
+            on_alert,
+            protect_timeout_s=self.cfg.modes.semi_task_protective_stop_timeout_s,
         )
         for u, vs in views.items():
             for v in vs:
