@@ -25,7 +25,6 @@ Result layers:
 from __future__ import annotations
 
 import datetime as dt
-import math
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -35,6 +34,7 @@ from typing import Any
 from app.config.schema import PlatformConfig
 from app.core.timeutil import IST, to_ist
 from app.data.bars import Bar
+from app.engine.sizing import size_lots
 from app.research.contracts import ExpiryCalendar, Spec
 from app.research.costs import ChargesTable
 from app.research.dataset import Dataset, UnderlyingData
@@ -318,7 +318,6 @@ class Pricer:
         risk_inr: float,
     ) -> Leg:
         risk, broker = self.cfg.risk, self.cfg.research.execution_broker
-        cap = float(risk.capital_inr) * risk.max_premium_pct_of_capital / 100
 
         def pnl(lots: int) -> tuple[float, float]:
             if lots <= 0:
@@ -335,19 +334,18 @@ class Pricer:
 
         lots, skip = 1, None
         if risk_inr > 0:
-            by_risk = math.floor(risk_inr / (stop_dist * lot)) if stop_dist > 0 else 0
-            by_cap = math.floor(cap / (entry_prem * lot)) if entry_prem > 0 else 0
-            lots = min(by_risk, by_cap, risk.max_lots)
-            if by_cap < 1:
-                skip = "SKIPPED_SIZE_PREMIUM_CAP"
-            elif by_risk < 1:
-                skip = "SKIPPED_SIZE_RISK"
-            else:
-                backstop_loss = self.cfg.contracts.backstop_delta_multiple * stop_dist * lot * lots
-                if backstop_loss > risk.max_backstop_loss_multiple_of_risk * risk_inr + 1e-9:
-                    skip, lots = "SKIPPED_BACKSTOP", 0
-            if skip:
-                lots = 0
+            r = size_lots(
+                risk_inr=risk_inr,
+                stop_dist=stop_dist,
+                premium=entry_prem,
+                lot=lot,
+                capital=float(risk.capital_inr),
+                max_premium_pct=risk.max_premium_pct_of_capital,
+                max_lots=risk.max_lots,
+                backstop_multiple=self.cfg.contracts.backstop_delta_multiple,
+                max_backstop_loss_multiple=risk.max_backstop_loss_multiple_of_risk,
+            )
+            lots, skip = r.lots, r.skip_reason
         net1, ch1 = pnl(1)
         net_s, ch_s = pnl(lots)
         return Leg(
