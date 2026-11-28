@@ -13,16 +13,24 @@
   * The same order lifecycle as a live broker: ack -> partial/fill -> cancelled/rejected,
     reported through the event sink. Positions and funds come from the fills.
 Time is injected (`now`), so replay and tests are deterministic.
+
+With `state_path` set, the order book is written to a JSON file (atomically) after every
+change and read back on start, so a paper session survives a crash or `kill -9` like a
+real broker account would, and restart reconciliation (invariant 7) can be tested.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import itertools
+import json
+import os
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
+from typing import Any
 
 from app.adapters.base import (
     BaseExecutionBroker,
@@ -84,7 +92,8 @@ class _PaperOrder:
 @dataclass
 class PaperConfig:
     latency_s: float = 0.2
-    band_pct: float = 20.0  # reject limit prices this far from the last price
+    band_pct: float = 40.0  # reject limit prices this far from the last price (NSE option
+    # operating ranges are wide and dynamic; 40% still catches a fat-fingered price)
     reject_rate: float = 0.0  # extra random rejections, for chaos tests
     seed: int = 7
     capital: Decimal = Decimal("50000")
@@ -97,6 +106,7 @@ class PaperBroker(BaseExecutionBroker):
     cfg: PaperConfig = field(default_factory=PaperConfig)
     name: str = "paper"
     supports_modify_to_exit: bool = True
+    state_path: Path | None = None
 
     def __post_init__(self) -> None:
         self._orders: dict[str, _PaperOrder] = {}
@@ -105,6 +115,65 @@ class PaperBroker(BaseExecutionBroker):
         self._seq = itertools.count(1)
         self._rnd = random.Random(self.cfg.seed)  # noqa: S311 - simulated rejections, not crypto
         self._cash_used = Decimal(0)
+        self._dirty = False
+        if self.state_path is not None and self.state_path.exists():
+            self._load(self.state_path)
+
+    # ------------------------------------------------------------ persistence
+    def _emit(self, ev: BrokerEvent) -> None:
+        self._dirty = True
+        super()._emit(ev)
+
+    def _save(self) -> None:
+        if self.state_path is None:
+            return
+        self._dirty = False
+        rows: list[dict[str, Any]] = []
+        for o in self._orders.values():
+            rows.append(
+                {
+                    "oid": o.oid,
+                    "req": o.req.model_dump(mode="json"),
+                    "created": o.created.isoformat(),
+                    "acked": o.acked,
+                    "status": o.status.value,
+                    "filled": o.filled,
+                    "value": str(o.value),
+                    "triggered": o.triggered,
+                    "limit": str(o.limit),
+                    "trigger": None if o.trigger is None else str(o.trigger),
+                    "order_type": o.order_type.value,
+                    "qty": o.qty,
+                    "updated": o.updated.isoformat() if o.updated else None,
+                }
+            )
+        n = int(rows[-1]["oid"][5:]) if rows else 0
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"seq": n, "orders": rows}), encoding="utf-8")
+        os.replace(tmp, self.state_path)  # atomic: a crash leaves the old or the new file
+
+    def _load(self, path: Path) -> None:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        for r in raw["orders"]:
+            o = _PaperOrder(
+                r["oid"],
+                OrderRequest.model_validate(r["req"]),
+                dt.datetime.fromisoformat(r["created"]),
+                acked=r["acked"],
+                status=BrokerOrderStatus(r["status"]),
+                filled=r["filled"],
+                value=Decimal(r["value"]),
+                triggered=r["triggered"],
+                limit=Decimal(r["limit"]),
+                trigger=None if r["trigger"] is None else Decimal(r["trigger"]),
+                order_type=OrderType(r["order_type"]),
+                qty=r["qty"],
+                updated=dt.datetime.fromisoformat(r["updated"]) if r["updated"] else None,
+            )
+            self._orders[o.oid] = o
+            self._by_tag[o.req.client_tag] = o.oid
+        self._seq = itertools.count(int(raw["seq"]) + 1)
 
     # ------------------------------------------------------------ provider basics
     def capabilities(self) -> frozenset[Capability]:
@@ -135,6 +204,8 @@ class PaperBroker(BaseExecutionBroker):
                     )
                 )
             self._match(o, now)
+        if self._dirty:
+            self._save()
 
     def _match(self, o: _PaperOrder, now: dt.datetime) -> None:
         d = self._depth.get(o.req.key)
@@ -234,9 +305,11 @@ class PaperBroker(BaseExecutionBroker):
                     reason=why,
                 )
             )
+            self._save()
             return PlaceResult(outcome="REJECTED", broker_order_id=oid, message=why)
         if req.order_type is OrderType.SL_LMT:
             o.status = BrokerOrderStatus.TRIGGER_PENDING
+        self._dirty = True
         self.advance()
         return PlaceResult(outcome="ACCEPTED", broker_order_id=oid)
 
@@ -298,6 +371,7 @@ class PaperBroker(BaseExecutionBroker):
         if trigger_price is not None:
             o.trigger = trigger_price
         o.updated = self.now()
+        self._dirty = True
         self.advance()
         return PlaceResult(outcome="ACCEPTED", broker_order_id=broker_order_id)
 
@@ -324,6 +398,7 @@ class PaperBroker(BaseExecutionBroker):
                 avg_price=o.avg,
             )
         )
+        self._save()
         return PlaceResult(outcome="ACCEPTED", broker_order_id=broker_order_id)
 
     def oid_for(self, tag: str) -> str | None:
@@ -375,11 +450,11 @@ class PaperBroker(BaseExecutionBroker):
                 ]
                 bq = sum(o.filled for o in buys)
                 avg = (sum((o.value for o in buys), Decimal(0)) / bq) if bq else None
-                info = self.instruments[key]
+                info = self.instruments.get(key)
                 out.append(
                     BrokerPosition(
                         key=key,
-                        broker_symbol=info.broker_symbol,
+                        broker_symbol=info.broker_symbol if info else key.canonical,
                         product=Product.MIS,
                         net_qty=q,
                         avg_price=avg,

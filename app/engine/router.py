@@ -113,6 +113,30 @@ class OrderRouter:
         m.modify_to_exit = m.modify_to_exit and self.broker.supports_modify_to_exit
         self.positions[m.position_uid] = _Tracked(m, key, product)
 
+    def adopt(
+        self,
+        m: PositionMachine,
+        key: InstrumentKey,
+        product: Product,
+        oids: dict[str, str],
+    ) -> None:
+        """Track a machine rebuilt after a restart, with its orders' broker ids."""
+        self.track(m, key, product)
+        for tag in m.orders:
+            self.owner[tag] = m.position_uid
+        self.oid.update(oids)
+
+    def untrack_closed(self) -> list[PositionMachine]:
+        """Drop finished positions; returns them (for the ledger)."""
+        done = [
+            t.machine
+            for t in self.positions.values()
+            if not t.machine.working() and t.machine.state.value in ("CLOSED", "REJECTED")
+        ]
+        for m in done:
+            del self.positions[m.position_uid]
+        return done
+
     # ------------------------------------------------------------ commands -> broker
     async def execute(self, puid: str, cmds: list[Command]) -> None:
         t = self.positions[puid]

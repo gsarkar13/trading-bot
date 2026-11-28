@@ -152,6 +152,80 @@ class PositionMachine:
     last_quote: Quote | None = None
     exit_attempts: int = 0
 
+    # ------------------------------------------------------------ restart (invariant 7)
+    @classmethod
+    def adopt(
+        cls,
+        position_uid: str,
+        lot_size: int,
+        tick: Decimal,
+        cfg: ExecutionMechanics,
+        new_tag: Callable[[], str],
+        now: dt.datetime,
+        orders: list[Order],
+        broker_long: int,
+        broker_avg: Decimal | None,
+        backstop_trigger: Decimal,
+    ) -> PositionMachine:
+        """Rebuild a machine after a restart from the broker's view, which is the truth.
+
+        `orders` are our own orders for this position as the broker reports them now.
+        If the broker's long quantity is not explained by those orders (a manual trade,
+        a lost record), a synthetic filled BUY tagged ADOPT-... makes up the difference so
+        the never-short guard works on what the broker actually holds.
+        The machine starts UNMANAGED unless a working stop already covers the position;
+        the engine then protects or flattens it (`execution.unmanaged_action`).
+        """
+        m = cls(position_uid, lot_size, tick, max(broker_long, 1), backstop_trigger, cfg, new_tag)
+        for o in orders:
+            m.orders[o.tag] = o
+        missing = broker_long - m.long_qty
+        if missing > 0:
+            px = broker_avg or backstop_trigger
+            m.orders[f"ADOPT-{position_uid}"] = Order(
+                f"ADOPT-{position_uid}",
+                "ENTRY",
+                Side.BUY,
+                missing,
+                OrderType.LMT,
+                px,
+                None,
+                status=OrderStatus.FILLED,
+                filled=missing,
+                avg_price=px,
+                created_at=now,
+                last_change=now,
+                first_limit=px,
+            )
+        m.first_fill_at = now if broker_long > 0 else None
+        p = m.protect
+        if broker_long <= 0:
+            if not m.working():
+                m._set(now, PositionState.CLOSED, "restart: nothing held at the broker")
+            else:
+                m._set(now, PositionState.EXITING, "restart: flat with working orders")
+                m.exit_reason = "restart"
+        elif m.working("EXIT", "FLATTEN"):
+            m._set(now, PositionState.EXITING, "restart: exit was in progress")
+            m.exit_reason = "restart"
+        elif (
+            p is not None and p.status is OrderStatus.TRIGGER_PENDING and p.remaining == broker_long
+        ):
+            m._set(now, PositionState.OPEN_PROTECTED, "restart: held and protected")
+        else:
+            m._set(now, PositionState.UNMANAGED, "restart: held without a covering stop")
+        return m
+
+    def take_over(self, now: dt.datetime, action: str) -> list[Command]:
+        """UNMANAGED -> protected (or flattened). No-op in any other state."""
+        if self.state is not PositionState.UNMANAGED:
+            return []
+        if action == "flatten":
+            return self._flatten(now, "unmanaged at restart")
+        self._set(now, PositionState.PARTIAL, "unmanaged: placing a protective stop")
+        self.first_fill_at = now  # the protection deadline runs from now
+        return self._ensure_protected(now)
+
     # ------------------------------------------------------------ derived quantities
     @property
     def bought(self) -> int:
