@@ -271,3 +271,16 @@ def test_strategy_changes_blocked_while_exposed(migrated_engine: Engine) -> None
     assert rows["pdh_pdl_breakout"] == 1 and rows["ema200_hammer_rvol_oi"] == 2
     with Session(migrated_engine) as s:
         assert s.scalar(select(func.count(StrategyHistory.id))) >= 11 + 3
+
+
+def test_public_ip_needs_two_agreeing_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core import hostchecks
+
+    answers = {"a": "13.200.1.1", "b": "13.200.1.1", "c": "1.2.3.4"}
+    monkeypatch.setattr(hostchecks, "_ask", lambda u, t: answers.get(u))
+    assert hostchecks.public_ip(["a", "b"]) == "13.200.1.1"
+    assert hostchecks.public_ip(["a", "c"]) is None  # disagree: not confirmed
+    assert hostchecks.static_ip_ok("13.200.1.1", ["a", "b"]) == (True, "ok")
+    ok, why = hostchecks.static_ip_ok("13.200.1.9", ["a", "b"])
+    assert not ok and "not the registered" in why
+    assert not hostchecks.static_ip_ok(None, ["a", "b"])[0]

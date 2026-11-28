@@ -143,3 +143,41 @@ def test_lower_priority_is_superseded_but_its_shadow_book_trades(
     outs = outcomes(migrated_engine)
     assert outs[1][0] == "BLOCKED: position open"
     assert outs[1][1]["shadow"] == "POSITION_OPEN"
+
+
+def test_journal_summarises_the_day(migrated_engine: Engine, tmp_path: Path) -> None:
+    from app.engine.journal import write_journal
+
+    test_signal_to_closed_trade_in_shadow_and_portfolio_books(migrated_engine, tmp_path)
+    stats = write_journal(migrated_engine, dt.date(2026, 12, 2), notes="followed the plan")
+    books = stats["books"]
+    assert isinstance(books, dict) and books["PAPER"]["trades"] == 1
+    assert books["PAPER"]["wins"] == 1 and stats["signals"] == 1
+    again = write_journal(migrated_engine, dt.date(2026, 12, 2))  # idempotent
+    assert again["books"] == books
+
+
+def test_warmup_views_match_the_backtest_views(migrated_engine: Engine) -> None:
+    from app.config.schema import PlatformConfig
+    from app.data.store import upsert_bars
+    from app.engine.history import DbHistory, warmup_views
+    from tests.helpers import session_bars
+
+    days = [dt.date(2026, 11, 30), dt.date(2026, 12, 1)]
+    for i, d in enumerate(days):
+        upsert_bars(
+            migrated_engine,
+            "INDEX|NIFTY",
+            "1m",
+            "fyers_hist",
+            session_bars(d, 24000 + i * 50, seed=i),
+        )
+    cfg = PlatformConfig()
+    views, ds = warmup_views(cfg, migrated_engine, ["NIFTY"], dt.date(2026, 12, 2), 10)
+    vs = views["NIFTY"]
+    assert len(vs) == 750 and vs[0].new_session and vs[375].new_session
+    assert vs[375].prior_day is not None  # day 2 sees day 1's daily candle
+    h = DbHistory(cfg, migrated_engine, ds, dt.date(2026, 12, 2))
+    pd = h.prior_day("NIFTY", dt.date(2026, 12, 2))
+    assert pd is not None and pd.close == vs[-1].bar.close
+    assert h.chain_at("NIFTY") is None and h.oi_pulse("NIFTY", vs[-1].now) is None
