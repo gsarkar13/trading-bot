@@ -6,5 +6,5 @@ call .venv\Scripts\activate.bat
 set PYTHONUTF8=1
 python -m app.tools.daily
 echo.
-echo Finished. Attach the newest file in reports\recorder\ in the chat.
+echo Finished. Attach the zip file named above in the chat.
 pause

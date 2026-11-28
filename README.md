@@ -51,7 +51,8 @@ strategies table. Safe to run again: it never overwrites your edits.
 | `python -m app.tools.fyers_probe` | records one real response per Fyers call, secrets removed |
 | `python -m app.tools.backfill --from A --to B` | downloads history (resumable) |
 | `python -m app.services.recorder` | records a trading day (09:00-15:35 IST) |
-| `python -m app.tools.daily` | login if needed, then the recorder (what `deploy\windows_daily.bat` runs) |
+| `python -m app.tools.phase1` | the whole Phase 1 data run, ending in one zip to attach (`deploy\windows_phase1.bat`) |
+| `python -m app.tools.daily` | login if needed, record the day, replay it, one zip (`deploy\windows_daily.bat`) |
 | `python -m app.tools.backtest run --from A --to B --period in-sample --grid` | backtest + HTML report |
 | `python -m app.tools.backtest freeze` | locks parameters before out-of-sample runs |
 | `python -m app.tools.replay --date D` | rebuilds a recorded day from ticks |

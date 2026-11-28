@@ -94,3 +94,28 @@ def test_market_hours_guard(h: int, m: int, wd: int, expect: bool) -> None:
 
     d = dt.date(2026, 11, 30) + dt.timedelta(days=wd)  # Monday + wd
     assert market_hours(dt.datetime(d.year, d.month, d.day, h, m, tzinfo=IST)) is expect
+
+
+def test_refused_chunk_is_recorded_and_the_rest_continues(migrated_engine: Engine) -> None:
+    from app.adapters.base import AdapterError
+
+    calls: list[tuple[str, str]] = []
+    ok = fake_fetch(calls)
+
+    def fetch(sym: str, res: str, a: dt.date, b: dt.date, cont: bool) -> list[Bar]:
+        if a < dt.date(2026, 7, 1) and res == "1":
+            raise AdapterError("Fyers error -50: range beyond plan limit")
+        return ok(sym, res, a, b, cont)
+
+    s = run_backfill(
+        migrated_engine,
+        fetch,
+        default_series({})[:1],
+        START,
+        END,
+        today=dt.date(2026, 11, 27),
+        log=lambda _: None,
+    )
+    info = s["series"]["INDEX|NIFTY 1m"]
+    assert len(info["errors"]) == 1 and "plan limit" in info["errors"][0]
+    assert info["fetched"] > 0  # the later chunk still came in

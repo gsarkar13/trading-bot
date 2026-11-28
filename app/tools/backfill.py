@@ -28,7 +28,12 @@ from typing import Any
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from app.adapters.base import AuthExpiredError, InstrumentMappingError, RateLimitedError
+from app.adapters.base import (
+    AdapterError,
+    AuthExpiredError,
+    InstrumentMappingError,
+    RateLimitedError,
+)
 from app.adapters.fyers.client import MAX_DAILY_DAYS, MAX_INTRADAY_DAYS, chunks
 from app.core.timeutil import IST, to_ist
 from app.core.types import InstrumentKey
@@ -105,8 +110,18 @@ def run_backfill(
                         wait = 15 * (attempt + 1)
                         log(f"  rate limited; waiting {wait}s")
                         sleep(wait)
+                    except AuthExpiredError:
+                        raise  # nothing else will work either; stop and say so
+                    except AdapterError as e:
+                        # e.g. a range older than the plan allows: note it, keep going
+                        info["errors"].append(f"{a}..{b}: {e}")
+                        log(f"  {s.name} {tf} {a}..{b}: refused by Fyers: {e}")
+                        bars = None
+                        break
                 else:
                     info["errors"].append(f"{a}..{b}: rate limited 4 times")
+                    continue
+                if bars is None:
                     continue
                 n = upsert_bars(engine, s.name, tf, SOURCE, bars)
                 info["fetched"] += n

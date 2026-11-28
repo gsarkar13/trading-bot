@@ -52,3 +52,7 @@ Thumbs.db
 
 # --- Per-host config (instance id, role, registered IP); not secret but host-specific ---
 config/host.yaml
+
+# --- Phase 1 bundles (attach in chat; never commit) ---
+reports/phase1/
+reports/phase1_bundle_*.zip

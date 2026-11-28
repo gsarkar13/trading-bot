@@ -33,77 +33,61 @@ they differ.
    ```
    *Linux:* `. .venv/bin/activate`
 
-## 2. First login and probe (5 minutes, any day after 06:30 IST)
+## 2. The data run: one command, one file to attach (15–40 minutes)
 
+Run this **after 15:45 IST on a weekday, or at a weekend**:
 ```bat
-python -m app.tools.login
+deploy\windows_phase1.bat
 ```
-- The first time, it asks you to **choose a vault passphrase** (at least 8 characters,
-  typed twice). It protects your Fyers token on disk. Don't lose it; if you do, delete
-  `data\vault.json` and choose a new one.
-- It prints a link. Open it, log in to Fyers and complete 2FA. Fyers then shows a page.
-  Copy the **whole address** from the browser's address bar and paste it into the window.
+*Linux:* `python -m app.tools.phase1`
 
-Then record one real response from each Fyers data call:
-```bat
-python -m app.tools.fyers_probe
-```
-It is best run during market hours, so it also captures 20 seconds of live ticks.
+What happens:
+1. It asks you to **choose a vault passphrase** the first time (at least 8 characters,
+   typed twice). It protects your Fyers token on disk. If you lose it, delete
+   `data\vault.json` and choose a new one.
+2. It prints a Fyers login link. Open it, log in and complete 2FA. Fyers then shows a
+   page: copy the **whole address** from the browser's address bar and paste it in.
+3. It then runs on its own: one test call to each Fyers service, about a year of
+   history, and the in-sample backtest with the sensitivity grid. If the download stops
+   (network, sleep), just run the command again; finished parts are skipped.
+4. At the end it prints the name of **one zip file**.
 
-**Attach:** the folder `reports\probe\<today>` (right-click → *Send to → Compressed (zipped) folder*).
+**Attach:** that zip file (`reports\phase1_bundle_<date>_<time>.zip`).
 
-## 3. Download history (after 15:45 IST or at a weekend; 5–15 minutes)
+Before anything goes into the zip, every file is checked: anything containing your App
+ID, secret, token or token-like text is left out, and the zip's `manifest.json` lists
+what was left out.
 
-```bat
-python -m app.tools.backfill --from 2025-12-01 --to 2026-11-27
-```
-- The Fyers Standard plan keeps about one year of 1-minute data. If you're on Prime, you
-  can use an earlier `--from`.
-- If it stops (network, token expiry), just run it again. Finished parts are skipped.
-
-**Attach:** `reports\backfill\summary_2025-12-01_2026-11-27.json`
-
-## 4. Backtest, in two steps (5–20 minutes each)
-
-The split date is already fixed in `config\default.yaml` as `2026-08-01`: data before it
-is **in-sample**, data from it on is **out-of-sample**. Don't change it after seeing
-results.
-
-**Step A, in-sample plus the sensitivity grid:**
-```bat
-python -m app.tools.backtest run --from 2025-12-01 --to 2026-11-27 --period in-sample --grid
-```
-**Attach:** both files it prints (`reports\backtest_in-sample_....html` and `.json`).
-
-**Step B, only after we have looked at A together.** Freeze the parameters, then run the
-data the strategies have never seen:
-```bat
-python -m app.tools.backtest freeze
-python -m app.tools.backtest run --from 2025-12-01 --to 2026-11-27 --period out-of-sample
-```
-`freeze` prints one line with the config hashes. Paste that line in the chat (it contains
-no secrets) so it can be recorded in `docs/DECISIONS.md`. The out-of-sample run refuses
-to start if any parameter changed since the freeze.
-
-**Attach:** both out-of-sample report files.
-
-## 5. Record one full trading day (unattended)
+## 3. Record one full trading day (unattended)
 
 On a trading day, before 09:00 IST:
-1. Set Windows so the laptop doesn't sleep: *Settings → System → Power → Screen and sleep*:
+1. Stop the laptop sleeping: *Settings → System → Power → Screen and sleep*:
    "When plugged in, put my device to sleep after" = **Never**. Keep it plugged in.
-2. Double-click `deploy\windows_daily.bat` (or run `python -m app.tools.daily`).
-   It asks for your vault passphrase, logs in to Fyers if needed, then records until
-   15:35 and downloads the day's candles. Leave the window open; don't close it.
-3. Around 15:40 it says "Finished".
+2. Double-click `deploy\windows_daily.bat` (Linux: `python -m app.tools.daily`).
+   It asks for your vault passphrase, logs in to Fyers if needed, records until 15:35,
+   downloads the day's candles, replays the day from the recorded ticks, and packs it all.
+   Leave the window open.
+3. Around 15:45 it prints the name of a zip file.
 
-**Attach:** `reports\recorder\<date>.json`
+**Attach:** that zip file.
 
-Then rebuild that day from the recorded ticks:
+## 4. After I've looked at the in-sample results: out-of-sample
+
+This step is deliberately separate, so the parameters are fixed before anyone looks
+at data the strategies have never seen:
 ```bat
-python -m app.tools.replay --date 2026-12-02
+python -m app.tools.backtest freeze
+python -m app.tools.backtest run --from 2025-12-03 --to 2026-11-27 --period out-of-sample
+python -m app.tools.phase1 --bundle-only
 ```
-(use the date you recorded). **Attach:** `reports\replay\<date>.json`
+`freeze` prints one line with the config hashes; paste that line in the chat (it
+contains no secrets). The out-of-sample run refuses to start if any parameter changed
+after the freeze. **Attach:** the new zip.
+
+## 5. Running the steps one by one (only if asked)
+`python -m app.tools.login`, `python -m app.tools.fyers_probe`,
+`python -m app.tools.backfill --from A --to B`, `python -m app.tools.backtest run ...`,
+`python -m app.services.recorder`, `python -m app.tools.replay --date D`.
 
 ## 6. Keep a copy of the data off the laptop (weekly, 2 minutes)
 

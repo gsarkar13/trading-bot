@@ -24,7 +24,11 @@ Re-read this file and DECISIONS.md at the start of every session.
 | Replay rebuilds candles identical to live, then runs the day through the backtest engine to a ledger | `tests/test_replay.py`, plus a manual run of the command |
 | Live processes never import pandas; recorder imports = 66 MB peak RSS | `tests/test_memory_rules.py`; measured command in ARCHITECTURE.md section 9 |
 
-### Not verified (needs the trader's runs, docs/PHASE1_STEPS.md)
+### Trader's remaining runs, now two commands (docs/PHASE1_STEPS.md, 2026-11-28)
+- `deploy\windows_phase1.bat` once after market hours: login, probe, ~1 year of history, in-sample backtest + grid, one zip.
+- `deploy\windows_daily.bat` on one trading day: record, replay, one zip.
+
+### Not verified (needs the trader's runs)
 - Any call against the real Fyers API: login, history, option chain, data socket. Built
   from the docs and the SDK source; the probe (step 2) records real responses as fixtures.
 - Real data volume per day and the 12-month disk projection: the recorder's daily summary
@@ -36,8 +40,8 @@ Re-read this file and DECISIONS.md at the start of every session.
 
 ### Phase 1 gate (brief section 21)
 - [x] all tests pass (here)
-- [ ] backtest report covering at least 6 months, run by the trader (PHASE1_STEPS.md step 4)
-- [ ] recorder ran unattended for one full session on the laptop (step 5)
+- [ ] backtest report covering at least 6 months, run by the trader (`windows_phase1.bat`)
+- [ ] recorder ran unattended for one full session on the laptop (`windows_daily.bat`)
 
 ## Next: Phase 2 (paper trading, dashboard, Telegram), only after the trader says go
 
@@ -48,7 +52,7 @@ Re-read this file and DECISIONS.md at the start of every session.
 - [ ] Merge the Phase 0 PR to sign off
 - [x] Create the Fyers non-trading API app (2026-11-27)
 - [ ] Put its App ID and Secret in `.env` on the laptop (PHASE1_STEPS.md step 1)
-- [ ] Phase 1: run steps 2–5 of docs/PHASE1_STEPS.md and attach the files
+- [ ] Phase 1: run `deploy\windows_phase1.bat` (after hours) and `deploy\windows_daily.bat` (one trading day); attach the two zips
 - [ ] Check the unverified historical dates in `config/contracts.yaml`
 - [ ] Create a Telegram bot with @BotFather (Phase 2)
 - [ ] Get AI keys if wanted (Phase 2)
