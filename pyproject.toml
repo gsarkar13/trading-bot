@@ -14,6 +14,7 @@ dependencies = [
     "anthropic>=1.17,<2",  # AI slot (advisory only); brings httpx2, used for other providers
     "fastapi>=0.115,<1",
     "uvicorn>=0.32,<1",
+    "websockets>=13",  # uvicorn's WebSocket support (dashboard live push)
 ]
 
 [project.optional-dependencies]

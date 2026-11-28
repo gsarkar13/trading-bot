@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
+import app.strategies.plugins  # noqa: F401 - registers implemented strategies
 from app.ai.advisor import what_if
 from app.api.auth import Auth
 from app.config.schema import PlatformConfig
@@ -44,6 +45,7 @@ from app.engine.risk import Breakers
 from app.engine.strategy_table import ChangeRefused, StrategyTable
 from app.indicators.core import EMA
 from app.research.dataset import SOURCES
+from app.strategies.registry import code_status
 
 STATIC = Path(__file__).parent / "static"
 
@@ -365,7 +367,7 @@ def create_app(ctx: ApiContext) -> FastAPI:
                     "name": r.name,
                     "segment": r.segment,
                     "stage": r.stage,
-                    "code_status": r.code_status,
+                    "code_status": code_status(r.id).value,  # derived live (D6)
                     "active": r.active,
                     "requested_mode": r.requested_mode,
                     "effective_mode": mode.value,

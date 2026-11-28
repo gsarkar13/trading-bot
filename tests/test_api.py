@@ -125,3 +125,11 @@ def test_local_token_only_from_localhost(tmp_path: Path) -> None:
     tok = (tmp_path / "t").read_text()
     assert a.local_ok(tok, "127.0.0.1") and not a.local_ok(tok, "100.64.0.2")
     assert not a.local_ok("guess", "127.0.0.1")
+
+
+def test_code_status_is_derived_from_the_registry(migrated_engine: Engine, tmp_path: Path) -> None:
+    _, c = setup(migrated_engine, tmp_path)
+    login(c)
+    st = {r["id"]: r["code_status"] for r in c.get("/api/strategies").json()}
+    assert st["pdh_pdl_breakout"] == "implemented" and st["ema200_hammer_rvol_oi"] == "implemented"
+    assert st["orb"] == "placeholder"

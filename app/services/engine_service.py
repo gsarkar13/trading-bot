@@ -230,10 +230,54 @@ class EngineService:
                 self.alerts.emit("critical", "ENGINE", "error in the engine timer; see log")
             await asyncio.sleep(1.0)
 
-    async def run(self, stop_at: dt.datetime) -> None:
+    def dashboard_servers(self, password_hash: str | None) -> list[Any]:
+        """uvicorn servers for the dashboard, on this event loop (section 15 "Access").
+        Extra bind hosts (e.g. the Tailscale IP) are refused without a password."""
+        import uvicorn
+
+        from app.api.auth import Auth
+        from app.api.server import ApiContext, create_app
+
+        assert self.engine is not None
+        d = self.cfg.dashboard
+        auth = Auth(password_hash, Path("data") / "local_api.token")
+        app = create_app(
+            ApiContext(
+                self.cfg,
+                self.db,
+                self.engine,
+                auth,
+                feeds=lambda: dict(self.rec.stats.socket_events),
+            )
+        )
+        hosts = [d.bind_host]
+        if d.extra_bind_hosts:
+            if password_hash is None:
+                self.alerts.emit(
+                    "critical",
+                    "HOST",
+                    "dashboard NOT opened on "
+                    f"{', '.join(d.extra_bind_hosts)}: set a password first "
+                    "(python -m app.tools.set_password)",
+                )
+            else:
+                hosts += list(d.extra_bind_hosts)
+        return [
+            uvicorn.Server(
+                uvicorn.Config(app, host=h, port=d.port, log_level="warning", lifespan="off")
+            )
+            for h in hosts
+        ]
+
+    async def run(
+        self, stop_at: dt.datetime, password_hash: str | None = None, dashboard: bool = True
+    ) -> None:
         self.stop_at = stop_at
         await self.setup()
-        tasks = [asyncio.create_task(c) for c in (self._consume(), self._host_checks())]
+        coros = [self._consume(), self._host_checks()]
+        if dashboard:
+            coros += [srv.serve() for srv in self.dashboard_servers(password_hash)]
+        tasks = [asyncio.create_task(c) for c in coros]
         try:
             await asyncio.gather(self.rec.run_live(), self._timer())
         finally:
@@ -328,7 +372,8 @@ def main() -> int:  # pragma: no cover - needs a live Fyers login
 
     start_bytes = db_bytes(db_path)
     try:
-        asyncio.run(svc.run(rec.stop_at))
+        pw = secrets.dashboard_password_hash
+        asyncio.run(svc.run(rec.stop_at, pw.get_secret_value() if pw else None))
     except KeyboardInterrupt:
         log.warning("stopped by keyboard")
     except Exception:

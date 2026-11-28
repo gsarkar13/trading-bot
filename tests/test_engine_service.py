@@ -37,6 +37,10 @@ class FakeRecorder:
     underlyings = ("NIFTY",)
 
     def __init__(self) -> None:
+        from collections import defaultdict
+        from types import SimpleNamespace
+
+        self.stats = SimpleNamespace(socket_events=defaultdict(int))
         self.listeners: list[Any] = []
         self.watched: list[InstrumentKey] = []
 
@@ -66,3 +70,22 @@ def test_setup_warms_up_reconciles_and_listens(migrated_engine: Engine, tmp_path
     asyncio.run(go())
     warn = [a.message for a in svc.alerts.recent if a.level == "warn"]
     assert any("warm-up candles stored" in m for m in warn)  # empty DB: fail closed
+
+
+def test_dashboard_never_opens_extra_hosts_without_a_password(
+    migrated_engine: Engine, tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    cfg = load_config().model_copy(deep=True)
+    cfg = cfg.model_copy(
+        update={"dashboard": cfg.dashboard.model_copy(update={"extra_bind_hosts": ("100.64.0.5",)})}
+    )
+    activate(migrated_engine)
+    svc = EngineService(
+        cfg, migrated_engine, smap(), None, FakeRecorder(), lambda: ist(9, 0), tmp_path
+    )
+    asyncio.run(svc.setup())
+    assert [s.config.host for s in svc.dashboard_servers(None)] == ["127.0.0.1"]
+    assert any("set a password" in a.message for a in svc.alerts.recent)
+    hosts = [s.config.host for s in svc.dashboard_servers("scrypt$00$00")]
+    assert hosts == ["127.0.0.1", "100.64.0.5"]
