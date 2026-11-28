@@ -434,6 +434,17 @@ class PositionMachine:
         if o.side is Side.BUY:
             if self.first_fill_at is None:
                 self.first_fill_at = now
+            if self.state in (PositionState.CLOSED, PositionState.REJECTED, PositionState.ERROR):
+                # the entry filled after we gave it up (async broker): get out again
+                self._set(now, PositionState.EXITING, f"late entry fill {o.filled} after close")
+                self.exit_reason = self.exit_reason or "late fill"
+                return [
+                    Alert(
+                        "critical",
+                        f"{self.position_uid}: entry filled after it was given up; exiting it",
+                    ),
+                    *self._cover_late_fill(now),
+                ]
             if self.state in (PositionState.ENTRY_PENDING, PositionState.SIGNALLED):
                 self._set(
                     now,
@@ -466,6 +477,19 @@ class PositionMachine:
             x.last_change = now
             return [Modify(x.tag, qty=x.qty)]
         return []
+
+    def on_modify_rejected(self, now: dt.datetime, tag: str, reason: str) -> list[Command]:
+        """The broker refused a Modify, so our record of the order may be wrong (e.g. a
+        stop we turned into the exit is still a stop at the broker). Cancel it: the
+        cancel event then re-protects or sends the exit from a known state. If it had
+        already filled, the cancel is refused and the fill event settles it."""
+        o = self.orders.get(tag)
+        if o is None or not o.working or o.cancel_requested:
+            return []
+        return [
+            Alert("warn", f"{tag}: modify refused ({reason}); cancelling and re-planning"),
+            self._cancel(now, o),
+        ]
 
     def on_send_failed(self, now: dt.datetime, tag: str, reason: str) -> list[Command]:
         """Timeout / network error: we don't know if the broker has it (invariant 5)."""
@@ -503,6 +527,8 @@ class PositionMachine:
         # Confirmed absent: re-send under the SAME tag (idempotent), at most twice.
         if o.sends >= 3:
             o.status = OrderStatus.REJECTED
+            if o.purpose == "ENTRY" and self.long_qty == 0 and not self.working():
+                self._set(now, PositionState.REJECTED, "entry not accepted after 3 sends")
             return [
                 Alert("critical", f"{tag}: not at broker after 3 sends; giving up"),
                 *(self._retry_exit(now, "send failed") if o.purpose != "ENTRY" else []),

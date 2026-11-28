@@ -227,7 +227,12 @@ class DbOrderStore:
             config_hash=meta.config_hash,
         )
         with Session(self.engine) as s:
-            s.add(t)
+            old = s.scalar(select(Trade).where(Trade.position_uid == m.position_uid))
+            if old is not None:  # re-opened by a late fill and closed again: rebook it
+                t.id = old.id
+                t = s.merge(t)
+            else:
+                s.add(t)
             s.commit()
             s.refresh(t)
             s.expunge(t)

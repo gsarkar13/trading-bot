@@ -225,7 +225,9 @@ class TradingEngine:
         self.instruments: dict[InstrumentKey, InstrumentInfo] = {}
         self.paper: dict[str, PaperBroker] = {}
         self.routers: dict[str, OrderRouter] = {}
-        self.positions: dict[str, LivePos] = {}
+        self.positions: dict[str, LivePos] = {}  # active positions
+        self._recent: dict[str, LivePos] = {}  # closed, still in their grace period
+        self._booked: dict[str, Decimal] = {}  # net P&L booked per position
         self.breakers: dict[str, Breakers] = {}
         self.depth: dict[InstrumentKey, Depth] = {}
         self.vix: float | None = None
@@ -1037,15 +1039,31 @@ class TradingEngine:
     # ------------------------------------------------------------ settlement
     def _settle(self, now: dt.datetime) -> None:
         for r in self.routers.values():
+            # a recently closed position re-opened by a late broker fill: manage it again
+            for puid, tracked in r.positions.items():
+                m = tracked.machine
+                if (
+                    puid not in self.positions
+                    and puid in self._recent
+                    and (m.working() or m.long_qty > 0)
+                ):
+                    p = self._recent.pop(puid)
+                    p.exit_sent = False
+                    self.positions[puid] = p
             for m in r.untrack_closed():
-                p = self.positions.pop(m.position_uid, None)
-                book = p.book if p else self.store.meta[m.position_uid].book
+                lp: LivePos | None = self.positions.pop(m.position_uid, None)
+                lp = lp or self._recent.get(m.position_uid)
+                if lp is not None:
+                    self._recent[m.position_uid] = lp
+                book = lp.book if lp else self.store.meta[m.position_uid].book
                 broker = self.cfg.research.execution_broker
-                t = self.store.record_trade(m, self.charges, broker, p.overrides if p else [])
-                self.store.forget(m)
+                t = self.store.record_trade(m, self.charges, broker, lp.overrides if lp else [])
                 if t is None:
                     continue
-                self._breakers(book).record_close(now, t.net_pnl)
+                # book only the change if this trade was booked before (late re-open)
+                delta = t.net_pnl - self._booked.get(m.position_uid, Decimal(0))
+                self._booked[m.position_uid] = t.net_pnl
+                self._breakers(book).record_close(now, delta)
                 self.last_exit[book] = now
                 self.alerts.emit(
                     "info",
@@ -1053,6 +1071,11 @@ class TradingEngine:
                     f"{book}: closed {t.instrument_key} net {t.net_pnl:+.2f} "
                     f"(gross {t.gross_pnl:+.2f}, charges {t.charges_total:.2f})",
                 )
+        # forget positions the routers have dropped (after their grace period)
+        live = {puid for r in self.routers.values() for puid in r.positions}
+        for puid in [x for x in self._recent if x not in live]:
+            self.store.forget(self._recent.pop(puid).machine)
+            self._booked.pop(puid, None)
         # unrealized P&L can trip a breaker while a trade is open
         for book in {p.book for p in self.positions.values() if not p.book.startswith("SHADOW")}:
             self._breakers(book).check(now, self._unrealized(book))

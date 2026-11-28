@@ -107,6 +107,9 @@ class OrderRouter:
         self.owner: dict[str, str] = {}  # tag -> position uid
         self.oid: dict[str, str] = {}  # tag -> broker order id
         self._events: deque[BrokerEvent] = deque()
+        self._deferred: dict[str, list[Command]] = {}
+        self._settled: dict[str, dt.datetime] = {}
+        self._replay: list[str] = []
         broker.set_event_sink(self._events.append)
 
     def track(self, m: PositionMachine, key: InstrumentKey, product: Product = Product.MIS) -> None:
@@ -126,21 +129,46 @@ class OrderRouter:
             self.owner[tag] = m.position_uid
         self.oid.update(oids)
 
-    def untrack_closed(self) -> list[PositionMachine]:
-        """Drop finished positions; returns them (for the ledger)."""
-        done = [
-            t.machine
-            for t in self.positions.values()
-            if not t.machine.working() and t.machine.state.value in ("CLOSED", "REJECTED")
-        ]
-        for m in done:
-            del self.positions[m.position_uid]
-            for tag in m.orders:  # no events can matter for a closed position any more
-                self.owner.pop(tag, None)
-                self.oid.pop(tag, None)
-        return done
+    def untrack_closed(self, grace_s: float = 60.0) -> list[PositionMachine]:
+        """Positions that have just finished, once each (for the ledger). They stay
+        tracked for `grace_s` more seconds so a late broker event (an entry that filled
+        after we cancelled it) still reaches its machine; then they are dropped."""
+        now = self.now()
+        newly: list[PositionMachine] = []
+        for t in list(self.positions.values()):
+            m = t.machine
+            done = not m.working() and m.state.value in ("CLOSED", "REJECTED")
+            if not done:
+                self._settled.pop(m.position_uid, None)  # re-opened by a late fill
+                continue
+            at = self._settled.get(m.position_uid)
+            if at is None:
+                self._settled[m.position_uid] = now
+                newly.append(m)
+            elif (now - at).total_seconds() >= grace_s:
+                del self.positions[m.position_uid]
+                del self._settled[m.position_uid]
+                for tag in m.orders:
+                    self.owner.pop(tag, None)
+                    self.oid.pop(tag, None)
+                    self._deferred.pop(tag, None)
+        return newly
 
     # ------------------------------------------------------------ commands -> broker
+    def _known(self, tag: str, oid: str) -> None:
+        self.oid[tag] = oid
+        if tag in self._deferred:
+            self._replay.append(tag)
+
+    async def _run_replays(self) -> None:
+        while self._replay:
+            tag = self._replay.pop()
+            cmds = self._deferred.pop(tag, [])
+            puid = self.owner.get(tag)
+            if puid is not None and puid in self.positions:
+                for c in cmds:
+                    await self._one(self.positions[puid], c)
+
     async def execute(self, puid: str, cmds: list[Command]) -> None:
         t = self.positions[puid]
         for c in cmds:
@@ -154,7 +182,15 @@ class OrderRouter:
             return
         if isinstance(c, Place):
             self.owner[c.tag] = m.position_uid
-            self.store.save_new(m, c, t.key)  # BEFORE sending (invariant 5)
+            try:
+                self.store.save_new(m, c, t.key)  # BEFORE sending (invariant 5)
+            except Exception as e:  # e.g. "database is locked": never send unrecorded
+                log.exception("could not store %s before sending", c.tag)
+                self.on_alert(
+                    Alert("critical", f"{c.tag}: not stored ({type(e).__name__}); not sent")
+                )
+                await self._feed(t, m.on_reject(self.now(), c.tag, "could not store"))
+                return
             req = OrderRequest(
                 client_tag=c.tag,
                 key=t.key,
@@ -172,7 +208,7 @@ class OrderRouter:
                 await self._feed(t, m.on_send_failed(self.now(), c.tag, type(e).__name__))
                 return
             if res.broker_order_id:
-                self.oid[c.tag] = res.broker_order_id
+                self._known(c.tag, res.broker_order_id)
             if res.outcome == "REJECTED":
                 self.store.save_status(c.tag, OrderStatus.REJECTED, 0, res.message or "")
                 await self._feed(t, m.on_reject(self.now(), c.tag, res.message or "rejected"))
@@ -184,7 +220,7 @@ class OrderRouter:
         if isinstance(c, Lookup):
             found = await self.broker.find_by_tag(c.tag)
             if found is not None:
-                self.oid[c.tag] = found.broker_order_id
+                self._known(c.tag, found.broker_order_id)
             cmds = m.on_lookup(
                 self.now(),
                 c.tag,
@@ -193,13 +229,16 @@ class OrderRouter:
                 avg_price=found.avg_fill_price if found else None,
                 broker_status=found.status.value if found else "",
             )
+            o = m.orders[c.tag]  # the machine's view AFTER the lookup, so the DB agrees
             self.store.save_status(
-                c.tag, OrderStatus.UNCERTAIN, 0, f"lookup: {'found' if found else 'not at broker'}"
+                c.tag, o.status, o.filled, f"lookup: {'found' if found else 'not at broker'}"
             )
             await self._feed(t, cmds)
             return
         oid = self.oid.get(c.tag)
         if oid is None:
+            # replayed as soon as the broker id is known (ack, lookup)
+            self._deferred.setdefault(c.tag, []).append(c)
             self.on_alert(
                 Alert(
                     "warn",
@@ -221,8 +260,12 @@ class OrderRouter:
             assert isinstance(c, Cancel)
             res = await self.broker.cancel_order(oid)
         if res.outcome != "ACCEPTED":
-            # e.g. cancelling a stop that already filled: the fill event settles it
             log.info("%s %s not accepted: %s", type(c).__name__, c.tag, res.message)
+            if isinstance(c, Modify):
+                await self._feed(
+                    t, m.on_modify_rejected(self.now(), c.tag, res.message or "rejected")
+                )
+            # a refused Cancel: the order already filled or ended; its event settles it
         else:
             o = m.orders[c.tag]
             what = "modify requested" if isinstance(c, Modify) else "cancel requested"
@@ -246,13 +289,22 @@ class OrderRouter:
         while self._events:
             ev = self._events.popleft()
             puid = self.owner.get(ev.client_tag)
-            if puid is None:
-                log.warning("event for unknown tag %s ignored", ev.client_tag)
+            if puid is None or puid not in self.positions:
+                if ev.kind == "fill":
+                    self.on_alert(
+                        Alert(
+                            "critical",
+                            f"{ev.client_tag}: fill for an order no "
+                            "longer tracked: check the broker positions now",
+                        )
+                    )
+                else:
+                    log.warning("event for unknown tag %s ignored", ev.client_tag)
                 continue
             t = self.positions[puid]
             m, now = t.machine, ev.at
             if ev.broker_order_id:
-                self.oid[ev.client_tag] = ev.broker_order_id
+                self._known(ev.client_tag, ev.broker_order_id)
             if ev.kind == "ack":
                 cmds = m.on_ack(now, ev.client_tag)
                 o = m.orders[ev.client_tag]
@@ -278,10 +330,20 @@ class OrderRouter:
                     ev.client_tag, OrderStatus.REJECTED, 0, ev.reason or "rejected"
                 )
             await self._feed(t, cmds)
+        await self._run_replays()
 
     async def tick(self) -> None:
         """Timers for every position (re-pricing, protection deadline, gap chase)."""
         now = self.now()
         for t in list(self.positions.values()):
             await self._feed(t, t.machine.on_timer(now))
+            # an order still "sent" long after sending, with no broker id: look it up
+            for o in list(t.machine.orders.values()):
+                if (
+                    o.status is OrderStatus.SENT
+                    and o.tag not in self.oid
+                    and o.last_change is not None
+                    and (now - o.last_change).total_seconds() > 2 * self.send_timeout_s
+                ):
+                    await self._feed(t, t.machine.on_send_failed(now, o.tag, "no answer"))
         await self.pump()
