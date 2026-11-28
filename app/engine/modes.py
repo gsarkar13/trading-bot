@@ -51,6 +51,8 @@ def resolve_mode(i: ModeInputs) -> Resolved:
             blockers.append("real money not armed today")
         if not i.data_token_ok:
             blockers.append("no data login today")
+        if i.role is not InstanceRole.EXECUTION:
+            blockers.append("this is a research instance (invariant 16)")
         if blockers:
             return Resolved(Mode.PAPER, tuple(reasons + blockers))
     if mode is Mode.LIVE:

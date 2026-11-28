@@ -169,6 +169,7 @@ def test_mode_resolution_exhaustively() -> None:
         assert r.mode.rank <= min(req.rank, ceil.rank)  # can only lower
         if r.mode.is_real_money:
             assert gate in (GateStatus.PASSED, GateStatus.OVERRIDDEN) and armed and data_ok
+            assert role is InstanceRole.EXECUTION  # inv 16: SEMI and LIVE alike
         if r.mode is Mode.LIVE:
             assert role is InstanceRole.EXECUTION and ip_ok and exec_ok
         if r.mode is Mode.SEMI:

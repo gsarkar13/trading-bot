@@ -46,6 +46,7 @@ from app.adapters.fyers.symbols import SymbolMap
 from app.brokers.paper import Depth, PaperBroker
 from app.brokers.semi import SemiBroker, semi_mechanics
 from app.config.schema import PlatformConfig, StrategyEntry
+from app.core.ratelimit import RateLimiter
 from app.core.timeutil import to_ist
 from app.core.types import (
     GateStatus,
@@ -214,6 +215,8 @@ class TradingEngine:
         self.quote_fetch, self.subscribe = quote_fetch, subscribe
         self.health = health or Health()
         self.on_signal = on_signal  # AI advisory side channel: fire and forget (inv 9)
+        self.order_limiter = RateLimiter(cfg.rate_limits.order_ops_per_second, 200)
+        self.paper_limiter = RateLimiter(cfg.rate_limits.order_ops_per_second, 200)
         self.ceiling: Mode = cfg.modes.global_ceiling  # lowered/raised at runtime, <= config
         self.iid = cfg.instance.instance_id
         self.state = EngineState()
@@ -268,7 +271,10 @@ class TradingEngine:
             else:
                 assert self.live is not None
                 broker = self.live
-            r = OrderRouter(broker, self.store, self.now, self._on_machine_alert)
+            # invariant 12: ONE budget for every real-broker order operation; simulated
+            # paper books get their own so they can never eat the real budget
+            limiter = self.paper_limiter if mode is Mode.PAPER else self.order_limiter
+            r = OrderRouter(broker, self.store, self.now, self._on_machine_alert, limiter)
             self.routers[name] = r
         return r
 
