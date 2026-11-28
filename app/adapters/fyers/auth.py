@@ -12,8 +12,11 @@ Verified against Fyers docs (BROKER_NOTES.md) and the fyers-apiv3 3.3.0 SDK sour
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import hashlib
+import json
+import re
 import secrets
 import urllib.parse
 from dataclasses import dataclass
@@ -45,16 +48,51 @@ def login_url(app_id: str, redirect_uri: str, state: str) -> str:
     return f"{LOGIN_URL}?{q}"
 
 
-def parse_redirect(url: str, expected_state: str | None) -> str:
-    """Return the auth code from a pasted redirect URL (or its query string)."""
-    url = url.strip()
+_JWT = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
+
+
+def _jwt_claims(token: str) -> dict[str, Any] | None:
+    try:
+        part = token.split(".")[1]
+        data = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+        return data if isinstance(data, dict) else None
+    except (ValueError, IndexError):
+        return None
+
+
+def parse_bare_code(text: str, now: dt.datetime | None = None) -> str | None:
+    """The Fyers redirect page can show the auth code itself instead of keeping it in the
+    address bar. Accept that code if it is a JWT whose subject is "auth_code"."""
+    if not _JWT.match(text):
+        return None
+    claims = _jwt_claims(text)
+    if claims is None or claims.get("sub") != "auth_code":
+        raise LoginError("that looks like a token, but not a Fyers auth code")
+    exp = claims.get("exp")
+    if isinstance(exp, int | float) and (now or dt.datetime.now(dt.UTC)).timestamp() > exp:
+        raise LoginError("this auth code has expired; open the login link again")
+    return text
+
+
+def parse_redirect(url: str, expected_state: str | None, now: dt.datetime | None = None) -> str:
+    """Return the auth code from what the trader pasted: the full redirect URL, its query
+    string, or the bare auth code the Fyers page displays. A bare code carries no `state`,
+    so the state check (which guards against a code from someone else's login) cannot run;
+    that is acceptable here because the trader copies it from their own browser."""
+    url = url.strip().strip('"').strip("'")
+    bare = parse_bare_code(url, now)
+    if bare is not None:
+        return bare
     query = urllib.parse.urlparse(url).query if "?" in url or "://" in url else url
     params = urllib.parse.parse_qs(query)
     if params.get("s", ["ok"])[0].lower() != "ok":
         raise LoginError(f"Fyers reported an error: {params.get('message', ['?'])[0]}")
     codes = params.get("auth_code")
     if not codes or not codes[0]:
-        raise LoginError("no auth_code in the URL (did you copy the full address?)")
+        raise LoginError(
+            "no auth_code found: paste the whole address from the browser's "
+            "address bar, or the auth code the Fyers page shows"
+        )
     if expected_state is not None and params.get("state", [None])[0] != expected_state:
         raise LoginError("state does not match this login attempt; start the login again")
     return codes[0]

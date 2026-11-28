@@ -244,3 +244,24 @@ def test_parse_tick_uses_exchange_time(smap: SymbolMap) -> None:
         is None
     )
     assert parse_tick({"type": "if", "symbol": "NSE:NIFTY50-INDEX", "ltp": 1}, smap, recv) is None
+
+
+def _fake_jwt(claims: dict[str, Any]) -> str:
+    import base64
+    import json
+
+    enc = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")  # noqa: E731
+    return f"{enc({'alg': 'HS256'})}.{enc(claims)}.c2lnbmF0dXJl"
+
+
+def test_bare_auth_code_from_the_fyers_page_is_accepted() -> None:
+    now = dt.datetime(2026, 11, 28, 11, 0, tzinfo=dt.UTC)
+    code = _fake_jwt({"sub": "auth_code", "exp": int(now.timestamp()) + 600})
+    assert auth.parse_redirect(code, "st8", now) == code
+    assert auth.parse_redirect(f"  {code}\n", "st8", now) == code
+    with pytest.raises(auth.LoginError, match="expired"):
+        auth.parse_redirect(_fake_jwt({"sub": "auth_code", "exp": 1}), "st8", now)
+    with pytest.raises(auth.LoginError, match="not a Fyers auth code"):
+        auth.parse_redirect(_fake_jwt({"sub": "access_token"}), "st8", now)  # wrong kind
+    with pytest.raises(auth.LoginError, match="no auth_code found"):
+        auth.parse_redirect("hello", "st8", now)

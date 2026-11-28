@@ -38,7 +38,10 @@ def main() -> int:
     state = auth.new_state()
     print("\n1) Open this link, log in to Fyers and finish 2FA:\n")
     print("   " + auth.login_url(app_id, sec.fyers_redirect_uri, state))
-    print("\n2) Paste the full address of the page Fyers sends you to, then press Enter:")
+    print(
+        "\n2) Paste the full address of the page Fyers sends you to (or the auth code that\n"
+        "   page shows), then press Enter. Paste it ONLY here, never in a chat:"
+    )
     pasted = input("> ")
     try:
         code = auth.parse_redirect(pasted, state)
