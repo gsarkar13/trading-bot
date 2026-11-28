@@ -11,8 +11,12 @@ they differ.
 
 ## 1. One-time setup (about 10 minutes)
 
-1. Install **Python 3.12** from https://www.python.org/downloads/ (tick *Add python.exe
-   to PATH*), and **Git for Windows** from https://git-scm.com/download/win.
+1. Install **Python 3.12** (exactly 3.12: the official Fyers SDK only installs on 3.12 on
+   Windows; it can sit alongside 3.13/3.14) and **Git for Windows**:
+   ```bat
+   winget install Python.Python.3.12
+   ```
+   or use the "Windows installer (64-bit)" from https://www.python.org/downloads/windows/.
 2. Open Command Prompt in the folder where you want the code, then run:
    ```bat
    git clone https://github.com/gsarkar13/trading-bot.git
