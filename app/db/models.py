@@ -145,7 +145,7 @@ class OptionChainSnapshot(Base):
     volume: Mapped[int | None] = mapped_column(Integer)
     oi: Mapped[int | None] = mapped_column(Integer)
     oi_change: Mapped[int | None] = mapped_column(Integer)
-    iv: Mapped[Decimal | None] = mapped_column(ExactDecimal)
+    iv: Mapped[Decimal | None] = mapped_column(ExactDecimal)  # percent, as Fyers sends it
     delta: Mapped[Decimal | None] = mapped_column(ExactDecimal)
     source: Mapped[str] = mapped_column(String(20))
 

@@ -2,8 +2,9 @@
 
 Response shape (docs, BROKER_NOTES.md): data.optionsChain[] (first element is the
 underlying with strike_price -1), data.expiryData[], data.indiavixData. Some SDK versions
-return the fields at top level, so both are accepted. UNVERIFIED against a live response
-until the trader's probe fixture is committed (tests/fixtures/fyers/recorded/).
+return the fields at top level, so both are accepted. Verified against real responses
+recorded 2026-11-28 (tests/fixtures/fyers/recorded/, tests/test_fyers_recorded.py).
+Note: greeks.iv is in PERCENT (17.28 means 17.28%); it is stored as given.
 """
 
 from __future__ import annotations

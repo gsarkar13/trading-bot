@@ -127,9 +127,20 @@ Excerpts are committed as test fixtures in `tests/fixtures/fyers/`.
   exch_feed_time, bid_size, ask_size, bid_price, ask_price, ...`; index `ltp,
   prev_close_price, exch_feed_time, high/low/open_price`. **The SDK removes `OI` from
   F&O ticks**, so OI comes only from option-chain snapshots.
-- Still ⚠️ until your probe fixture arrives: the exact live option-chain response shape
-  (parser accepts `data.optionsChain` or top-level), the units of `exch_feed_time`
-  (assumed epoch seconds), and whether the redirect really carries `code=200`.
+- **Verified with real responses recorded 2026-11-28** (`tests/fixtures/fyers/recorded/`,
+  `tests/test_fyers_recorded.py`):
+  - option chain: `{"code","data","message","s"}`, with `data.optionsChain` (element 0
+    = underlying, `strike_price` -1, `fp` = futures price), `data.expiryData[]` (`date`,
+    `expiry` epoch, `expiry_flag` W/M), `data.indiavixData.ltp`, `data.callOi`/`putOi`.
+    With `greeks=1`, each strike has `greeks.{delta,gamma,theta,vega,iv}`; **iv is in
+    percent**.
+  - history: candle time = candle OPEN, epoch seconds; daily candles are stamped 00:00 UTC;
+    futures with `oi_flag=1` add OI as a 7th column; **index candles now carry volume**.
+  - socket: `exch_feed_time` is epoch seconds; control messages are `cn`, `ful` (full
+    mode on), `sub` and a final untyped "Connection Closed"; **quotes arrive after
+    15:30** (futures to 15:40, index to 15:59).
+  - redirect: the real address carries `s=ok&code=200&auth_code=...&state=...`. The
+    `code=200` trap is real; only `auth_code` is used.
 
 ### Data WebSocket ✅ (…/websockets/data-socket/overview/)
 - Python: `from fyers_apiv3.FyersWebsocket import data_ws`; `FyersDataSocket(access_token="appid:token", litemode=False, reconnect=True, on_message=…)`; `subscribe(symbols=[…], data_type="SymbolUpdate" | "DepthUpdate")`.

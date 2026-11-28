@@ -206,3 +206,38 @@ def test_strategy1_trade_end_to_end(
     a, b = s["books"]["S1_A"], s["books"]["S1_B"]
     assert a["signals"] >= 1 and a["trades"] == 1, a
     assert b["trades"] == 0 and b["rejected"].get("FILTERED_BY_BOOK", 0) >= 1
+
+
+def test_special_evening_session_is_not_a_trading_day(migrated_engine: Engine) -> None:
+    """A Muhurat-style evening hour must not become the next day's PDH/PDL (D48)."""
+    from app.research.dataset import load_dataset
+
+    d1, sunday, d2 = dt.date(2026, 11, 6), dt.date(2026, 11, 8), dt.date(2026, 11, 9)
+    upsert_bars(migrated_engine, "INDEX|NIFTY", "1m", "fyers_hist", flat_day(d1, 24000, 8))
+    evening = [Bar(ist(sunday, 18, 0) + i * M, 30000, 30010, 29990, 30000) for i in range(70)]
+    upsert_bars(migrated_engine, "INDEX|NIFTY", "1m", "fyers_hist", evening)
+    upsert_bars(migrated_engine, "INDEX|NIFTY", "1m", "fyers_hist", flat_day(d2, 24000, 8))
+    ds = load_dataset(migrated_engine, ("NIFTY",), d1, d2)
+    u = ds.per_underlying["NIFTY"]
+    assert u.trading_days == [d1, d2]
+    pd = u.prior_day(d2)
+    assert pd is not None and pd.high < 25000  # Friday's range, not the 30,000 evening hour
+
+
+def test_backfill_lists_short_and_special_days() -> None:
+    from app.tools.backfill import _short_days
+
+    sunday = dt.date(2026, 11, 8)
+    evening = [Bar(ist(sunday, 18, 0) + i * M, 1, 1, 1, 1) for i in range(70)]
+    normal = flat_day(dt.date(2026, 11, 9), 100, 1)
+    out = _short_days(evening + normal, [sunday, dt.date(2026, 11, 9)])
+    assert out == [
+        {
+            "date": "2026-11-08",
+            "weekday": "Sun",
+            "bars": 70,
+            "first_ist": "18:00",
+            "last_ist": "19:09",
+            "bars_outside_09:15-15:30": 70,
+        }
+    ]

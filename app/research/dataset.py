@@ -20,7 +20,7 @@ from typing import Any
 
 from sqlalchemy import Engine, text
 
-from app.core.timeutil import to_ist
+from app.core.timeutil import in_session, to_ist
 from app.data.bars import Bar
 from app.data.resample import daily
 from app.data.store import load_bars
@@ -144,12 +144,17 @@ def load_dataset(
 ) -> Dataset:
     per = {}
     for u in underlyings:
+        # Regular session only (09:15-15:29 IST). Special evening sessions such as Diwali
+        # Muhurat trading (~1 hour) would otherwise count as a trading day and become the
+        # next day's PDH/PDL; futures candles after 15:30 are dropped too (D48).
         idx = [
             x
             for x in load_bars(engine, f"INDEX|{u}", "1m", SOURCES, a, b)
-            if a <= to_ist(x.ts).date() <= b
+            if a <= to_ist(x.ts).date() <= b and in_session(x.ts)
         ]
-        fut = {x.ts: x for x in load_bars(engine, f"FUTC|{u}", "1m", SOURCES, a, b)}
+        fut = {
+            x.ts: x for x in load_bars(engine, f"FUTC|{u}", "1m", SOURCES, a, b) if in_session(x.ts)
+        }
         days = sorted({to_ist(x.ts).date() for x in idx})
         per[u] = UnderlyingData(
             u,
@@ -159,7 +164,7 @@ def load_dataset(
             days,
             load_chain_points(engine, u, a, b, on_expiry_day),
         )
-    vix1 = load_bars(engine, "INDEX|INDIAVIX", "1m", SOURCES, a, b)
+    vix1 = [x for x in load_bars(engine, "INDEX|INDIAVIX", "1m", SOURCES, a, b) if in_session(x.ts)]
     vixd = {
         to_ist(x.ts).date(): x
         for x in load_bars(engine, "INDEX|INDIAVIX", "1d", SOURCES, a - dt.timedelta(days=10), b)

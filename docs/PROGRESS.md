@@ -2,7 +2,7 @@
 
 Re-read this file and DECISIONS.md at the start of every session.
 
-## Current phase: 1 (data and research), built; waiting for the trader's data runs
+## Current phase: 1 (data and research): data run done 2026-11-28; one recorded session still needed
 
 ### Phase 0: done and signed off (PR #1 merged 2026-11-27)
 
@@ -40,7 +40,7 @@ Re-read this file and DECISIONS.md at the start of every session.
 
 ### Phase 1 gate (brief section 21)
 - [x] all tests pass (here)
-- [ ] backtest report covering at least 6 months, run by the trader (`windows_phase1.bat`)
+- [x] backtest report covering at least 6 months, run by the trader: 2026-11-28, in-sample 3 Dec 2025 – 31 Jul 2026 (163 days). Results: docs/PHASE1_RESULTS.md
 - [ ] recorder ran unattended for one full session on the laptop (`windows_daily.bat`)
 
 ## Next: Phase 2 (paper trading, dashboard, Telegram), only after the trader says go

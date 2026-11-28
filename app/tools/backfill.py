@@ -35,7 +35,7 @@ from app.adapters.base import (
     RateLimitedError,
 )
 from app.adapters.fyers.client import MAX_DAILY_DAYS, MAX_INTRADAY_DAYS, chunks
-from app.core.timeutil import IST, to_ist
+from app.core.timeutil import IST, in_session, to_ist
 from app.core.types import InstrumentKey
 from app.data.bars import Bar
 from app.data.store import load_bars, upsert_bars
@@ -153,6 +153,7 @@ def run_backfill(
                 "bars_per_day_min": min(
                     (sum(1 for b in bars if to_ist(b.ts).date() == d) for d in days), default=0
                 ),
+                "short_or_special_days": _short_days(bars, days),
             }
         )
     idx_days = {d for d in _days(engine, "INDEX|NIFTY", start, end)}
@@ -163,6 +164,30 @@ def run_backfill(
                 d.isoformat() for d in missing[:50]
             ]
     return summary
+
+
+def _short_days(bars: list[Bar], days: list[dt.date], normal: int = 375) -> list[dict[str, Any]]:
+    """Days with fewer candles than a normal session, or with candles outside 09:15-15:30
+    IST (e.g. Muhurat trading), so they can be checked by eye."""
+    by_day: dict[dt.date, list[Bar]] = {}
+    for b in bars:
+        by_day.setdefault(to_ist(b.ts).date(), []).append(b)
+    out = []
+    for d in days:
+        bs = by_day.get(d, [])
+        outside = sum(1 for b in bs if not in_session(b.ts))
+        if bs and (len(bs) < normal - 15 or outside):
+            out.append(
+                {
+                    "date": d.isoformat(),
+                    "weekday": d.strftime("%a"),
+                    "bars": len(bs),
+                    "first_ist": to_ist(bs[0].ts).strftime("%H:%M"),
+                    "last_ist": to_ist(bs[-1].ts).strftime("%H:%M"),
+                    "bars_outside_09:15-15:30": outside,
+                }
+            )
+    return out[:40]
 
 
 def _days(engine: Engine, key: str, a: dt.date, b: dt.date) -> list[dt.date]:
