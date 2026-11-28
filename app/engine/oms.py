@@ -443,9 +443,14 @@ class PositionMachine:
     def on_quote(self, now: dt.datetime, q: Quote) -> list[Command]:
         self.last_quote = q
         p = self.protect
-        if p is not None and p.trigger is not None and q.ltp is not None:
-            if q.ltp <= p.trigger and p.triggered_at is None:
-                p.triggered_at = now
+        if (
+            p is not None
+            and p.trigger is not None
+            and q.ltp is not None
+            and q.ltp <= p.trigger
+            and p.triggered_at is None
+        ):
+            p.triggered_at = now
         return []
 
     # ------------------------------------------------------------ exits

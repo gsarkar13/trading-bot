@@ -147,7 +147,7 @@ def test_rejected_stop_flattens() -> None:
 
 def test_gap_skipped_stop_is_chased_then_alerts() -> None:
     m = machine()
-    _, prot = open_position(m)
+    open_position(m)
     m.on_quote(t(10), Quote(D("95.00"), D("95.50"), D("95.20"), t(10)))  # through 100 trigger
     assert m.on_timer(t(12)) == []
     [mod] = m.on_timer(t(13.1))
