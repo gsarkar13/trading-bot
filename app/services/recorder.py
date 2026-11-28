@@ -539,6 +539,19 @@ def _expiry_epochs(resp: dict[str, Any]) -> list[tuple[dt.date, int]]:
     return out
 
 
+def calendar_problem(d: dt.date, calendar_dir: Path) -> str | None:
+    """Section 14.5: trading is refused without a checked calendar for this year."""
+    f = calendar_dir / f"nse_{d.year}.yaml"
+    if not f.exists():
+        return f"no NSE calendar for {d.year} (config/calendar/README.md)"
+    import yaml
+
+    data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+    if not str(data.get("verified_by") or "").strip():
+        return f"nse_{d.year}.yaml is not marked verified_by anyone"
+    return None
+
+
 def is_trading_day(d: dt.date, calendar_dir: Path) -> tuple[bool, str]:
     if d.weekday() >= 5:
         return False, "weekend"

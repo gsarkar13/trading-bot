@@ -2,14 +2,77 @@
  "days": [
   {
    "date": "2026-12-01",
-   "rss_mb": 77.8125,
+   "rss_mb": 79.30859375,
    "signals_total": 19,
    "open_positions": 0,
-   "elapsed_s": 24.3
+   "elapsed_s": 22.9
+  },
+  {
+   "date": "2026-12-02",
+   "rss_mb": 79.43359375,
+   "signals_total": 38,
+   "open_positions": 0,
+   "elapsed_s": 42.3
+  },
+  {
+   "date": "2026-12-03",
+   "rss_mb": 79.59375,
+   "signals_total": 57,
+   "open_positions": 0,
+   "elapsed_s": 57.0
+  },
+  {
+   "date": "2026-12-04",
+   "rss_mb": 79.78515625,
+   "signals_total": 76,
+   "open_positions": 0,
+   "elapsed_s": 74.0
+  },
+  {
+   "date": "2026-12-07",
+   "rss_mb": 80.1015625,
+   "signals_total": 95,
+   "open_positions": 0,
+   "elapsed_s": 88.9
+  },
+  {
+   "date": "2026-12-08",
+   "rss_mb": 80.4375,
+   "signals_total": 114,
+   "open_positions": 0,
+   "elapsed_s": 101.9
+  },
+  {
+   "date": "2026-12-09",
+   "rss_mb": 80.703125,
+   "signals_total": 133,
+   "open_positions": 0,
+   "elapsed_s": 116.0
+  },
+  {
+   "date": "2026-12-10",
+   "rss_mb": 80.88671875,
+   "signals_total": 152,
+   "open_positions": 0,
+   "elapsed_s": 131.2
+  },
+  {
+   "date": "2026-12-11",
+   "rss_mb": 81.21875,
+   "signals_total": 171,
+   "open_positions": 0,
+   "elapsed_s": 145.0
+  },
+  {
+   "date": "2026-12-14",
+   "rss_mb": 81.66015625,
+   "signals_total": 190,
+   "open_positions": 0,
+   "elapsed_s": 159.0
   }
  ],
- "peak_rss_mb": 77.8125,
- "growth_mb_per_day_after_day2": 0.0,
+ "peak_rss_mb": 81.66015625,
+ "growth_mb_per_day_after_day2": 0.28,
  "limit_mb": 600,
  "pass": true
 }

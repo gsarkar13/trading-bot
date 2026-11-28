@@ -89,3 +89,22 @@ def test_dashboard_never_opens_extra_hosts_without_a_password(
     assert any("set a password" in a.message for a in svc.alerts.recent)
     hosts = [s.config.host for s in svc.dashboard_servers("scrypt$00$00")]
     assert hosts == ["127.0.0.1", "100.64.0.5"]
+
+
+def test_no_verified_calendar_means_no_new_entries(migrated_engine: Engine, tmp_path: Path) -> None:
+    from app.services.recorder import calendar_problem
+
+    cal = tmp_path / "cal"
+    cal.mkdir()
+    assert "no NSE calendar" in (calendar_problem(dt.date(2026, 12, 2), cal) or "")
+    (cal / "nse_2026.yaml").write_text('year: 2026\nverified_by: ""\nholidays: []\n')
+    assert "verified" in (calendar_problem(dt.date(2026, 12, 2), cal) or "")
+    activate(migrated_engine)
+    svc = EngineService(
+        load_config(), migrated_engine, smap(), None, FakeRecorder(), lambda: ist(9, 0), tmp_path
+    )
+    svc.calendar_dir = cal
+    eng = asyncio.run(svc.setup())
+    assert eng.state.halted and "verified" in eng.state.halted
+    (cal / "nse_2026.yaml").write_text("year: 2026\nverified_by: trader 2026-12-01\n")
+    assert calendar_problem(dt.date(2026, 12, 2), cal) is None

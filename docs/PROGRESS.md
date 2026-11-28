@@ -2,7 +2,7 @@
 
 Re-read this file and DECISIONS.md at the start of every session.
 
-## Current phase: 1 (data and research): data run done 2026-11-28; one recorded session still needed
+## Current phase: 2 (paper trading) built 2026-11-28; Phase 1's recorded session still needed
 
 ### Phase 0: done and signed off (PR #1 merged 2026-11-27)
 
@@ -43,7 +43,31 @@ Re-read this file and DECISIONS.md at the start of every session.
 - [x] backtest report covering at least 6 months, run by the trader: 2026-11-28, in-sample 3 Dec 2025 – 31 Jul 2026 (163 days). Results: docs/PHASE1_RESULTS.md
 - [ ] recorder ran unattended for one full session on the laptop (`windows_daily.bat`)
 
-## Next: Phase 2 (paper trading, dashboard, Telegram), only after the trader says go
+## Phase 2: paper trading, dashboard, Telegram - built 2026-11-28, PR open for review
+
+What exists now (details: docs/ARCHITECTURE.md, docs/DASHBOARD.md, DECISIONS D52-D59):
+- Engine: order/position state machine, paper broker (persisted), SEMI order tasks,
+  mode resolution + arming, breakers, time guards, data gate, restart reconciliation,
+  flatten, ledger with itemised charges, end-of-day journal, shadow + portfolio books.
+- AI advisory (Gemini `gemini-3.5-flash-lite`, Claude `claude-haiku-5-5`): fire-and-forget.
+- Dashboard (React, built static, served by the engine) + login; Telegram bot + watchdog;
+  standalone flatten; Windows scripts (`windows_trade.bat`, `windows_flatten.bat`,
+  `windows_set_password.bat`, `windows_schedule.bat`). Trader steps: docs/PHASE2_STEPS.md
+
+### Phase 2 gate (brief section 21)
+- [x] every section 4 invariant has a test that tries to break it (docs/INVARIANT_TESTS.md)
+- [x] chaos tests: feed drop mid-trade, duplicate/out-of-order ticks, order timeout,
+      partial fill, gap-skipped SL, token expiry mid-session, real `kill -9` with open
+      positions then restart, static-IP flip mid-session, foreign-instance order, engine
+      hang with /flatten via the watchdog (real hung process killed) - tests/test_chaos.py etc.
+- [x] memory soak within 1 GB: `python -m app.tools.soak --days 10` on 2026-11-28 here:
+      10 simulated days, ~225k ticks, 190 signals, peak RSS **82 MB**, +0.28 MB/day.
+      Not included: the Fyers websocket SDK and uvicorn threads; measure on the PC with
+      a real session (Task Manager) before Phase 3.
+- [ ] not verified here (needs the trader's PC and a market day): a full live paper
+      session end to end with real Fyers ticks, the dashboard on the phone, Telegram.
+
+## Next: Phase 3 (execution broker, server, real-money gate), only after the trader says go
 
 ## Things only the trader can do (brief section 23), current list
 - [x] Create the private GitHub repo and attach it to the session
@@ -54,8 +78,9 @@ Re-read this file and DECISIONS.md at the start of every session.
 - [ ] Put its App ID and Secret in `.env` on the laptop (PHASE1_STEPS.md step 1)
 - [ ] Phase 1: run `deploy\windows_phase1.bat` (after hours) and `deploy\windows_daily.bat` (one trading day); attach the two zips
 - [ ] Check the unverified historical dates in `config/contracts.yaml`
-- [ ] Create a Telegram bot with @BotFather (Phase 2)
-- [ ] Get AI keys if wanted (Phase 2)
+- [ ] Create a Telegram bot with @BotFather (optional, docs/PHASE2_STEPS.md)
+- [ ] Get AI keys if wanted (optional)
+- [ ] Set the dashboard password; create and verify `config/calendar/nse_2026.yaml` (PHASE2_STEPS.md)
 - [ ] AWS: sign up with UPI, create Lightsail instance ($7/month, 1 GB plan), attach static IP, billing alert; upgrade to Paid before month 5 (Phase 3)
 - [ ] Create the Flattrade API key with the static IP; register the same IP with Fyers (Phase 3)
 - [ ] Save Flattrade Pi doc pages and attach them (Phase 3)

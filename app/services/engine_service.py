@@ -101,6 +101,7 @@ class EngineService:
     ) -> None:
         self.cfg, self.db, self.smap, self.client, self.rec = cfg, db, smap, client, recorder
         self.now, self.state_dir, self.advisor = now, state_dir, advisor
+        self.calendar_dir = REPO_ROOT / "config" / "calendar"
         self.process_id = uuid.uuid4().hex
         self.alerts = AlertBus(db, cfg.instance.instance_id, now)
         self.health = Health(data_login=True)
@@ -202,6 +203,11 @@ class EngineService:
                     "candles stored; its signals are blocked until it is ready",
                 )
         await eng.start()
+        from app.services.recorder import calendar_problem
+
+        cal = calendar_problem(today, self.calendar_dir)
+        if cal is not None:
+            eng._halt(cal)  # recorder still records; no new entries (section 14.5)
         self.rec.listeners.append(self._on_tick)
         self.engine = eng
         return eng
