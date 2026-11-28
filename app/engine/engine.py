@@ -36,8 +36,9 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Protocol
+from typing import ClassVar, Protocol
 
+from pydantic import BaseModel
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
@@ -54,6 +55,7 @@ from app.core.types import (
     Mode,
     PositionState,
     Product,
+    Segment,
 )
 from app.data.bars import Bar
 from app.data.candle_builder import CandleBuilder
@@ -83,11 +85,14 @@ from app.engine.sizing import size_lots
 from app.engine.store import DbOrderStore, PositionMeta
 from app.research.costs import ChargesTable
 from app.strategies.base import (
+    DataNeeds,
+    ExitDecision,
     MarketView,
     OIPulse,
     OpenPosition,
     Signal,
     StrategyPlugin,
+    WarmupRequirement,
 )
 
 log = logging.getLogger(__name__)
@@ -182,6 +187,39 @@ class EngineState:
     decisions: list[Decision] = field(default_factory=list)
 
 
+class _NoParams(BaseModel):
+    pass
+
+
+class _Unmanaged(StrategyPlugin):
+    """Placeholder for a position found at restart that no strategy owns (or whose
+    strategy is gone): no signals, no exits of its own. Square-off, breakers and the
+    broker-side stop still apply."""
+
+    id: ClassVar[str] = "unmanaged"
+    segment: ClassVar[Segment] = Segment.OPTIONS
+    params_model: ClassVar[type[BaseModel]] = _NoParams
+
+    @classmethod
+    def data_needs(cls, params: BaseModel) -> DataNeeds:
+        return DataNeeds(timeframes=("1m",))
+
+    @classmethod
+    def warmup(cls, params: BaseModel) -> WarmupRequirement:
+        return WarmupRequirement(bars={})
+
+    def on_candle(self, timeframe: str, view: MarketView) -> list[Signal]:
+        return []
+
+    def exit_logic(self, position: OpenPosition, view: MarketView) -> ExitDecision:
+        return ExitDecision(action="HOLD")
+
+
+UNMANAGED_SLOT = Slot(
+    "unmanaged", _Unmanaged(_NoParams(), "none"), StrategyEntry(id="unmanaged"), 0
+)
+
+
 def shadow_book(sid: str) -> str:
     return f"SHADOW:{sid}"
 
@@ -229,6 +267,7 @@ class TradingEngine:
         self._recent: dict[str, LivePos] = {}  # closed, still in their grace period
         self._booked: dict[str, Decimal] = {}  # net P&L booked per position
         self._step_errors: dict[str, dt.datetime] = {}
+        self._adopt_overrides: dict[str, list[dict[str, object]]] = {}
         self.breakers: dict[str, Breakers] = {}
         self.depth: dict[InstrumentKey, Depth] = {}
         self.vix: float | None = None
@@ -383,7 +422,26 @@ class TradingEngine:
                 r.broker_long,
                 r.broker_avg,
                 backstop,
+                r.outside_exit_avg,
             )
+            if m.closed_outside is not None:
+                q, px, assumed = m.closed_outside
+                how = "ASSUMED at the stop price (no record of the sale)" if assumed else "at"
+                self.alerts.emit(
+                    "critical",
+                    "RECONCILE",
+                    f"{book}: {r.key.canonical} x{q} was sold while the engine was down; "
+                    f"booked {how} {px}. Check it against the broker's trade book.",
+                )
+                self._adopt_overrides[m.position_uid] = [
+                    {
+                        "at": now.isoformat(),
+                        "by": "restart",
+                        "what": "closed outside the engine",
+                        "price": str(px),
+                        "price_assumed": assumed,
+                    }
+                ]
             if not r.known:
                 self.store.open_position(
                     m,
@@ -434,44 +492,60 @@ class TradingEngine:
                     "warn", "RECONCILE", f"{book}: resumed {r.key.canonical} ({m.state.value})"
                 )
             self.store.sync_position(m)
-            slot = next((s for s in self.slots if s.id == r.strategy_id), None)
-            if slot is not None and m.state is not PositionState.CLOSED and r.known:
-                stop, target = self._stored_levels(r.position_uid)
-                self.positions[m.position_uid] = LivePos(
-                    m.position_uid,
-                    r.book or book,
-                    mode,
-                    slot,
-                    Signal(
-                        strategy_id=slot.id,
-                        underlying=r.key.underlying or "",
-                        direction="LONG_CE"
-                        if r.key.option_type and r.key.option_type.value == "CE"
-                        else "LONG_PE",
-                        at=now,
-                        reference_price=Decimal(str(stop)),
-                        stop_underlying=Decimal(str(stop)),
-                        target_underlying=None if target is None else Decimal(str(target)),
-                        checklist={"restored": True},
-                        config_hash="restored",
-                    ),
-                    r.key,
-                    router,
-                    m,
-                    stop,
-                    target,
-                    stop,
-                    0.0,
-                    now,
-                )
+            if m.state in (PositionState.CLOSED, PositionState.REJECTED):
+                continue  # settled into the ledger by the next timer pass
+            # every open recovered position is managed: square-off, breakers, one per
+            # underlying, invariant 17 (unknown ones get a placeholder strategy)
+            slot = next((s for s in self.slots if s.id == r.strategy_id), None) or UNMANAGED_SLOT
+            lv = self._stored_levels(r.position_uid) if r.known else None
+            ce = r.key.option_type is not None and r.key.option_type.value == "CE"
+            if lv is None:  # no strategy levels: no engine stop/target, broker stop only
+                ref, orig_stop, stop, target = 0.0, 0.0, (0.0 if ce else 1e12), None
+            else:
+                ref, orig_stop, stop, target = lv
+            self.positions[m.position_uid] = LivePos(
+                m.position_uid,
+                r.book or book,
+                mode,
+                slot,
+                Signal(
+                    strategy_id=slot.id,
+                    underlying=r.key.underlying or "",
+                    direction="LONG_CE" if ce else "LONG_PE",
+                    at=now,
+                    reference_price=Decimal(str(ref)),
+                    stop_underlying=Decimal(str(stop)),
+                    target_underlying=None if target is None else Decimal(str(target)),
+                    checklist={"restored": True},
+                    config_hash="restored",
+                ),
+                r.key,
+                router,
+                m,
+                stop,
+                target,
+                ref,
+                abs(ref - orig_stop),
+                now,
+            )
 
-    def _stored_levels(self, puid: str) -> tuple[float, float | None]:
+    def _stored_levels(self, puid: str) -> tuple[float, float, float, float | None] | None:
+        """(entry reference, original stop, current stop, target) from the database."""
         with Session(self.db) as s:
             p = s.scalar(select(PositionRow).where(PositionRow.position_uid == puid))
-        if p is None or p.strategy_stop_underlying is None:
-            return 0.0, None
+            if p is None or p.strategy_stop_underlying is None:
+                return None
+            sig = (
+                s.scalar(select(SignalRow).where(SignalRow.signal_uid == p.signal_uid))
+                if p.signal_uid
+                else None
+            )
+        stop = float(p.strategy_stop_underlying)
+        inp = sig.inputs if sig else {}
+        ref = float(str(inp.get("reference", stop)))
+        orig = float(str(inp.get("stop", stop)))
         t = p.target_underlying
-        return float(p.strategy_stop_underlying), None if t is None else float(t)
+        return ref, orig, stop, None if t is None else float(t)
 
     # ------------------------------------------------------------ warm-up
     def warm_up(self, view: MarketView) -> None:
@@ -606,6 +680,7 @@ class TradingEngine:
             )
             if dec.action == "TRAIL" and dec.new_stop_underlying is not None:
                 p.stop = float(dec.new_stop_underlying)
+                self.store.update_stop(p.uid, p.stop)
             elif dec.action in ("EXIT_TARGET", "EXIT_STOP"):
                 await self._exit(p, dec.reason or dec.action.lower())
         await self._check_levels(u, bar.low, bar.high)
@@ -994,6 +1069,7 @@ class TradingEngine:
         if spot is not None and ((p.long and new >= spot) or (not p.long and new <= spot)):
             raise ValueError("refused: the stop would be through the current price")
         old, p.stop = p.stop, new
+        self.store.update_stop(p.uid, new)
         p.overrides.append(
             {
                 "at": self.now().isoformat(),
@@ -1083,7 +1159,8 @@ class TradingEngine:
                     self._recent[m.position_uid] = lp
                 book = lp.book if lp else self.store.meta[m.position_uid].book
                 broker = self.cfg.research.execution_broker
-                t = self.store.record_trade(m, self.charges, broker, lp.overrides if lp else [])
+                ovr = (lp.overrides if lp else []) + self._adopt_overrides.pop(m.position_uid, [])
+                t = self.store.record_trade(m, self.charges, broker, ovr)
                 if t is None:
                     continue
                 # book only the change if this trade was booked before (late re-open)

@@ -204,3 +204,98 @@ def test_review9_one_failing_timer_step_does_not_stop_the_others(
     assert len(beats) == 2  # heartbeat still written
     crit = [a for a in h.alerts.recent if a.level == "critical"]
     assert len(crit) == 1 and "foreign-order scan" in crit[0].message  # throttled
+
+
+# ------------------------------------------------------------ restart findings 4, 5, 10
+def _quote(px: str):  # type: ignore[no-untyped-def]
+    async def q(k: InstrumentKey) -> Depth:
+        p = D(px)
+        return Depth(p, p + D("0.50"), 10**6, 10**6, p, dt.datetime.now(dt.UTC))
+
+    return q
+
+
+def test_review5_offline_flatten_is_booked_and_hits_the_breaker(
+    migrated_engine: Engine, tmp_path: Path
+) -> None:
+    from app.db.models import RiskState, Trade
+    from app.services.recorder import save_master
+    from app.tools.flatten import flatten_paper_books
+    from tests.engine_harness import OPT, ist, smap
+    from tests.test_engine_restart import open_then_kill, restart
+
+    h = open_then_kill(migrated_engine, tmp_path)
+    save_master(migrated_engine, [smap().info(OPT)], ist(10, 0).date())
+    reps = asyncio.run(
+        flatten_paper_books(
+            tmp_path,
+            migrated_engine,
+            "LAP1",
+            ist(10, 5).date(),
+            _quote("90.00"),
+            h.clock,
+            pause_s=0,
+        )
+    )
+    assert not any(r.still_open for r in reps)
+    h2 = restart(migrated_engine, tmp_path, ist(10, 6))
+    assert any("sold while the engine was down" in a.message for a in h2.alerts.recent)
+    asyncio.run(h2.engine.on_timer())
+    with Session(migrated_engine) as s:
+        trades = list(s.scalars(select(Trade)))
+        day = s.scalar(
+            select(RiskState).where(RiskState.book == "PAPER", RiskState.period == "day")
+        )
+    assert len(trades) == 2
+    paper = next(t for t in trades if t.book == "PAPER")
+    assert paper.exit_price == D("90.00")  # the flatten's own fill (at the bid)
+    assert paper.overrides and paper.overrides[0]["what"] == "closed outside the engine"
+    assert day is not None and day.realized_pnl == paper.net_pnl < 0
+
+
+def test_review4_adopted_unknown_position_is_squared_off(
+    migrated_engine: Engine, tmp_path: Path
+) -> None:
+    from tests.engine_harness import OPT, Harness, activate, ist, smap
+    from tests.engine_harness import Clock as HClock
+
+    activate(migrated_engine)
+    clock = HClock(ist(15, 5))
+    live = PaperBroker({OPT: smap().info(OPT)}, clock, PaperConfig(latency_s=0.0))
+    live.on_market(OPT, Depth(D("120.00"), D("120.50"), 650, 650, D("120.2"), clock()))
+    live.place_sync(
+        OrderRequest(
+            client_tag="LAP1261202000090",
+            key=OPT,
+            side=Side.BUY,
+            qty=65,
+            order_type=OrderType.LMT,
+            limit_price=D("121.00"),
+            product=Product.MIS,
+        )
+    )
+    h = Harness(migrated_engine, tmp_path, clock=clock, process_id="p2", live=live)
+    asyncio.run(h.engine.start())
+    [p] = list(h.engine.positions.values())
+    assert p.slot.id == "unmanaged" and p.book == "REAL"
+    h.engine.depth[OPT] = Depth(D("110.00"), D("110.50"), 650, 650, D("110.2"), clock())
+    assert h.engine._unrealized("REAL") == (D("110.00") - D("120.50")) * 65  # breakers see it
+    live.on_market(OPT, Depth(D("110.00"), D("110.50"), 650, 650, D("110.2"), clock()))
+    h.at(ist(15, 10, 1))
+    asyncio.run(h.engine.on_timer())
+    assert live._long(OPT) == 0  # squared off at 15:10 like any other position
+
+
+def test_review10_trailed_stop_and_risk_survive_a_restart(
+    migrated_engine: Engine, tmp_path: Path
+) -> None:
+    from tests.engine_harness import ist
+    from tests.test_engine_restart import open_then_kill, restart
+
+    h = open_then_kill(migrated_engine, tmp_path)
+    [uid] = [p.uid for p in h.engine.positions.values() if p.book == "PAPER"]
+    h.engine.spot["NIFTY"] = 24010.0
+    h.engine.adjust_stop(uid, "cost", "test")  # stop 23985 -> 24000
+    h2 = restart(migrated_engine, tmp_path, ist(10, 3))
+    p = h2.engine.positions[uid]
+    assert p.stop == 24000 and p.entry_underlying == 24000 and p.initial_risk == 15

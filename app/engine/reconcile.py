@@ -74,6 +74,7 @@ class Recovered:
     oids: dict[str, str] = field(default_factory=dict)
     strategy_id: str | None = None
     book: str | None = None
+    outside_exit_avg: Decimal | None = None  # our sells the DB never saw (offline flatten)
 
 
 @dataclass
@@ -149,16 +150,17 @@ def reconcile(
     out: list[Recovered] = []
     claimed: set[str] = set()
     with Session(engine) as s:
-        rows = list(
-            s.scalars(
+        rows = [
+            pr
+            for pr in s.scalars(
                 select(PositionRow).where(
                     PositionRow.instance_id == instance_id, PositionRow.state.in_(OPEN_STATES)
                 )
             )
-        )
+            if (book is None or pr.book == book) and (mode is None or pr.mode == mode)
+        ]
+        per_row = []
         for pr in rows:
-            if (book is not None and pr.book != book) or (mode is not None and pr.mode != mode):
-                continue
             orows = list(
                 s.scalars(
                     select(OrderRow)
@@ -166,27 +168,56 @@ def reconcile(
                     .order_by(OrderRow.id)
                 )
             )
-            orders = [_from_row(r, by_tag.get(r.client_tag), now) for r in orows]
             claimed |= {r.client_tag for r in orows}
-            q, avg = held.pop(pr.instrument_key, (0, None))
-            out.append(
-                Recovered(
-                    pr.position_uid,
-                    InstrumentKey.from_canonical(pr.instrument_key),
-                    orders,
-                    q,
-                    avg or pr.avg_entry_price,
-                    pr.backstop_sl_price,
-                    True,
-                    {
-                        r.client_tag: by_tag[r.client_tag].broker_order_id
-                        for r in orows
-                        if r.client_tag in by_tag
-                    },
-                    pr.strategy_id,
-                    pr.book,
-                )
+            per_row.append((pr, orows))
+    # Our own filled sells that no stored order explains (e.g. the standalone flatten):
+    # they price an exit made while the engine was down.
+    outside: dict[str, tuple[int, Decimal]] = {}
+    for bo in order_book:
+        tag_info = parse_tag(bo.client_tag) if bo.client_tag else None
+        if (
+            bo.client_tag
+            and bo.client_tag not in claimed
+            and tag_info
+            and tag_info[0] == instance_id
+            and bo.side is Side.SELL
+            and bo.filled_qty
+            and bo.avg_fill_price
+            and bo.key is not None
+        ):
+            q0, v0 = outside.get(bo.key.canonical, (0, Decimal(0)))
+            outside[bo.key.canonical] = (q0 + bo.filled_qty, v0 + bo.avg_fill_price * bo.filled_qty)
+    for pr, orows in per_row:
+        orders = [_from_row(r, by_tag.get(r.client_tag), now) for r in orows]
+        own = sum(o.filled for o in orders if o.side is Side.BUY) - sum(
+            o.filled for o in orders if o.side is Side.SELL
+        )
+        q, avg = held.get(pr.instrument_key, (0, None))
+        allot = max(0, min(own, q))  # only what this position's own orders explain
+        if q - allot:
+            held[pr.instrument_key] = (q - allot, avg)
+        else:
+            held.pop(pr.instrument_key, None)
+        oq, ov = outside.get(pr.instrument_key, (0, Decimal(0)))
+        out.append(
+            Recovered(
+                pr.position_uid,
+                InstrumentKey.from_canonical(pr.instrument_key),
+                orders,
+                allot,
+                avg or pr.avg_entry_price,
+                pr.backstop_sl_price,
+                True,
+                {
+                    r.client_tag: by_tag[r.client_tag].broker_order_id
+                    for r in orows
+                    if r.client_tag in by_tag
+                },
+                pr.strategy_id,
+                pr.book,
+                (ov / oq).quantize(Decimal("0.01")) if oq else None,
             )
+        )
     for canon, (q, avg) in held.items():
         if q < 0:
             notes.append(f"broker shows a SHORT position {canon} {q}: handle it manually")

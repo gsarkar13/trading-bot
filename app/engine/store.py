@@ -171,6 +171,14 @@ class DbOrderStore:
                 p.closed_at = self.now()
             s.commit()
 
+    def update_stop(self, position_uid: str, stop: float) -> None:
+        """Trailed / manually moved strategy stops survive a restart (review #10)."""
+        with Session(self.engine) as s:
+            p = s.scalar(select(Position).where(Position.position_uid == position_uid))
+            if p is not None:
+                p.strategy_stop_underlying = Decimal(str(round(stop, 2)))
+                s.commit()
+
     def forget(self, m: PositionMachine) -> None:
         """Drop the in-memory caches of a settled position (bounded memory)."""
         self.meta.pop(m.position_uid, None)

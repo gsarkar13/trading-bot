@@ -93,8 +93,8 @@ async def flatten_broker(
 ) -> FlattenReport:
     rep = FlattenReport(name)
     book = await broker.order_book()
-    for o in book:
-        if o.status in WORKING:
+    for o in book:  # entries first: nothing new may fill while we exit
+        if o.status in WORKING and o.side is Side.BUY:
             r = await broker.cancel_order(o.broker_order_id)
             rep.cancelled += r.outcome == "ACCEPTED"
     tags = TagSource(instance_id, today, [o.client_tag for o in book if o.client_tag])
@@ -102,9 +102,6 @@ async def flatten_broker(
         longs = [p for p in await broker.positions() if p.key is not None and p.net_qty > 0]
         if not longs:
             break
-        for o in await broker.order_book():  # last round's unfilled exits
-            if o.status in WORKING:
-                await broker.cancel_order(o.broker_order_id)
         for p in longs:
             assert p.key is not None
             info = infos.get(p.key)
@@ -113,7 +110,13 @@ async def flatten_broker(
                 feed(p.key, q)
             ref = (q.bid or q.ltp) if q else None
             if info is None or ref is None:
+                # can't price an exit: keep its stop at the broker, report it below
                 continue
+            # only now cancel what rests on this instrument (its stop, last round's exit)
+            for o in await broker.order_book():
+                if o.status in WORKING and o.key == p.key and o.side is Side.SELL:
+                    r = await broker.cancel_order(o.broker_order_id)
+                    rep.cancelled += r.outcome == "ACCEPTED"
             px = _round_down(ref - 2 * info.tick_size, info.tick_size)
             res = await broker.place_order(
                 OrderRequest(
@@ -150,7 +153,19 @@ async def flatten_paper_books(
     for f in sorted(state_dir.glob("*.json")):
         probe = PaperBroker({}, now, PaperConfig(latency_s=0.0), state_path=f)
         keys = list({o.key for o in await probe.order_book() if o.key is not None})
-        b = PaperBroker(infos_from_db(engine, keys), now, PaperConfig(latency_s=0.0), state_path=f)
+        infos = infos_from_db(engine, keys)
+        for k in keys:  # a paper book only needs lot/tick to validate; never block an exit
+            infos.setdefault(
+                k,
+                InstrumentInfo(
+                    key=k,
+                    broker_symbol=k.canonical,
+                    broker_token=None,
+                    lot_size=1,
+                    tick_size=Decimal("0.05"),
+                ),
+            )
+        b = PaperBroker(infos, now, PaperConfig(latency_s=0.0), state_path=f)
         out.append(
             await flatten_broker(
                 b,

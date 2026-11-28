@@ -280,7 +280,9 @@ class PaperBroker(BaseExecutionBroker):
             if p is not None and (p / info.tick_size) % 1:
                 return f"price {p} is not a multiple of tick {info.tick_size}"
         d = self._depth.get(req.key)
-        if d is not None and d.ltp:
+        # the band is a fat-finger check on prices meant to trade now; a protective
+        # stop's limit sits far below the market by design (review finding)
+        if d is not None and d.ltp and req.order_type is OrderType.LMT:
             dev = abs(req.limit_price - d.ltp) / d.ltp * 100
             if dev > Decimal(str(self.cfg.band_pct)):
                 return f"limit {req.limit_price} is outside the price band"

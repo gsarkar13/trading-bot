@@ -151,6 +151,7 @@ class PositionMachine:
     exit_reason: str | None = None
     last_quote: Quote | None = None
     exit_attempts: int = 0
+    closed_outside: tuple[int, Decimal, bool] | None = None  # (qty, price, price assumed)
 
     # ------------------------------------------------------------ restart (invariant 7)
     @classmethod
@@ -166,6 +167,7 @@ class PositionMachine:
         broker_long: int,
         broker_avg: Decimal | None,
         backstop_trigger: Decimal,
+        exit_price: Decimal | None = None,
     ) -> PositionMachine:
         """Rebuild a machine after a restart from the broker's view, which is the truth.
 
@@ -197,6 +199,30 @@ class PositionMachine:
                 last_change=now,
                 first_limit=px,
             )
+        excess = m.long_qty - broker_long
+        if excess > 0:
+            # we bought more than the broker now holds: it was sold while we were down
+            # (manual exit, standalone flatten, broker square-off). Book it so the ledger
+            # and the breakers see it (invariant 8); price from our own unclaimed sells,
+            # else assume the worst plausible case, the backstop stop.
+            px = exit_price or backstop_trigger
+            tag = f"OUTSIDE-{position_uid}"
+            m.orders[tag] = Order(
+                tag,
+                "EXIT",
+                Side.SELL,
+                excess,
+                OrderType.LMT,
+                px,
+                None,
+                status=OrderStatus.FILLED,
+                filled=excess,
+                avg_price=px,
+                created_at=now,
+                last_change=now,
+                first_limit=px,
+            )
+            m.closed_outside = (excess, px, exit_price is None)
         m.first_fill_at = now if broker_long > 0 else None
         p = m.protect
         if broker_long <= 0:
