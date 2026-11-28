@@ -64,3 +64,23 @@ def test_detector_catches_known_shapes() -> None:
     assert not find_secrets("config_hash = 0123456789abcdef")
     assert not find_secrets("ALGO_FYERS_APP_SECRET=")
     assert not find_secrets("fyers_app_secret: SecretStr | None = None")
+
+
+def test_no_source_file_is_git_ignored() -> None:
+    """A broad ignore rule once hid app/data/ from git (CI failure on PR #2)."""
+    sources = [
+        str(p.relative_to(REPO_ROOT))
+        for d in ("app", "tests", "alembic", "config")
+        for p in (REPO_ROOT / d).rglob("*")
+        if p.is_file()
+        and "__pycache__" not in p.parts
+        and p.suffix in {".py", ".yaml", ".csv", ".md", ".mako"}
+    ]
+    ignored = subprocess.run(  # noqa: S603
+        ["git", "check-ignore", "--no-index", *sources],  # noqa: S607
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    allowed = {"config/host.yaml"}  # per-host, deliberately untracked
+    assert [f for f in ignored if f not in allowed] == []

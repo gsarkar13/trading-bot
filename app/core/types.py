@@ -145,11 +145,13 @@ class InstrumentKey(BaseModel):
       * future:  (underlying, expiry, FUT)
       * equity:  (NSE, ISIN, series)
       * index:   (underlying) with kind="INDEX" — spot indices have no tradable contract
+      * FUTC:    (underlying) — Fyers' continuous front-month future series (history only,
+                 used for volume). Data only: never tradable
     """
 
     model_config = ConfigDict(frozen=True)
 
-    kind: Literal["OPT", "FUT", "EQ", "INDEX"]
+    kind: Literal["OPT", "FUT", "EQ", "INDEX", "FUTC"]
     underlying: str | None = None
     expiry: dt.date | None = None
     strike: Decimal | None = None
@@ -173,6 +175,7 @@ class InstrumentKey(BaseModel):
             "FUT": {"underlying", "expiry"},
             "EQ": {"isin", "series"},
             "INDEX": {"underlying"},
+            "FUTC": {"underlying"},
         }[k]
         present = {name for name, ok in has.items() if ok}
         if present != required:
@@ -197,7 +200,13 @@ class InstrumentKey(BaseModel):
             return f"FUT|{self.underlying}|{self.expiry.isoformat()}"
         if self.kind == "EQ":
             return f"EQ|NSE|{self.isin}|{self.series}"
+        if self.kind == "FUTC":
+            return f"FUTC|{self.underlying}"
         return f"INDEX|{self.underlying}"
+
+    @property
+    def tradable(self) -> bool:
+        return self.kind in ("OPT", "FUT", "EQ")
 
     @classmethod
     def option(
@@ -222,3 +231,7 @@ class InstrumentKey(BaseModel):
     @classmethod
     def index(cls, underlying: str) -> InstrumentKey:
         return cls(kind="INDEX", underlying=underlying)
+
+    @classmethod
+    def continuous_future(cls, underlying: str) -> InstrumentKey:
+        return cls(kind="FUTC", underlying=underlying)

@@ -1,0 +1,73 @@
+[
+ {
+  "type": "cn",
+  "code": 200,
+  "message": "Authentication done",
+  "s": "ok"
+ },
+ {
+  "type": "ful",
+  "code": 200,
+  "message": "Full Mode On",
+  "s": "ok"
+ },
+ {
+  "type": "sub",
+  "code": 200,
+  "message": "Subscribed",
+  "s": "ok"
+ },
+ {
+  "ltp": 25607.2,
+  "prev_close_price": 25884.5,
+  "ch": -277.3,
+  "chp": -1.07,
+  "exch_feed_time": 1795775399,
+  "high_price": 25909.15,
+  "low_price": 25565.9,
+  "open_price": 25839.25,
+  "type": "if",
+  "symbol": "NSE:NIFTY50-INDEX"
+ },
+ {
+  "ltp": 16.55,
+  "prev_close_price": 16.84,
+  "ch": -0.29,
+  "chp": -1.72,
+  "exch_feed_time": 1795774404,
+  "high_price": 16.86,
+  "low_price": 15.17,
+  "open_price": 16.84,
+  "type": "if",
+  "symbol": "NSE:INDIAVIX-INDEX"
+ },
+ {
+  "ltp": 25699.3,
+  "vol_traded_today": 3216915,
+  "last_traded_time": 1795774199,
+  "exch_feed_time": 1795774200,
+  "bid_size": 910,
+  "ask_size": 130,
+  "bid_price": 25698.3,
+  "ask_price": 25699.2,
+  "last_traded_qty": 65,
+  "tot_buy_qty": 129285,
+  "tot_sell_qty": 293605,
+  "avg_trade_price": 25810.36,
+  "low_price": 25681.0,
+  "high_price": 26000.0,
+  "lower_ckt": 0,
+  "upper_ckt": 0,
+  "open_price": 25952.0,
+  "prev_close_price": 26029.4,
+  "type": "sf",
+  "symbol": "NSE:NIFTY26DECFUT",
+  "ch": -330.1,
+  "chp": -1.2682
+ },
+ {
+  "code": 200,
+  "message": "Connection Closed",
+  "s": "ok"
+ }
+]

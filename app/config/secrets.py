@@ -23,7 +23,7 @@ class Secrets(BaseSettings):
     gemini_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
     dashboard_password_hash: SecretStr | None = None
-    vault_path: str = "data/vault.bin"
+    vault_path: str = "data/vault.json"
 
     def __repr__(self) -> str:  # never show values, even by accident
         set_names = [k for k, v in self.__dict__.items() if v is not None]

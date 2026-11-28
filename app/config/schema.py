@@ -64,6 +64,10 @@ class LossLimit(_Strict):
 
 class RiskConfig(_Strict):
     capital_inr: Decimal = Decimal("50000")
+    # Underlyings that paper/real trading may open positions in (enforced from Phase 2).
+    # Backtests still study every underlying a strategy lists. BANKNIFTY is research-only
+    # at this capital: 1 ATM lot (~Rs 42,000) exceeds the premium cap (DECISIONS.md D50).
+    tradable_underlyings: tuple[str, ...] = ("NIFTY",)
     segment_allocation: SegmentAllocation = SegmentAllocation()
     daily_loss: LossLimit = LossLimit(pct_of_capital=3)
     weekly_loss: LossLimit = LossLimit(pct_of_capital=8)
@@ -284,6 +288,37 @@ class RecorderConfig(_Strict):
     underlyings: tuple[str, ...] = ("NIFTY", "BANKNIFTY")
 
 
+class UnderlyingCostModel(_Strict):
+    half_spread_points: NonNegFloat  # added to buys, taken from sells (modeled layer)
+    iv_vs_vix: Annotated[float, Field(gt=0)]  # ATM IV = India VIX x this (documented guess)
+
+
+class ResearchConfig(_Strict):
+    """Backtest assumptions (section 16.4). Every one is printed in the report."""
+
+    out_of_sample_from: dt.date | None = Field(
+        default=None, description="Data on/after this date is out-of-sample (fix before use)."
+    )
+    frozen_registry: str = "reports/frozen_configs.json"
+    risk_free_rate: NonNegFloat = 0.065
+    slippage_ticks_per_side: Annotated[int, Field(ge=0)] = 1
+    option_tick: NonNegFloat = 0.05
+    costs: dict[str, UnderlyingCostModel] = Field(
+        default_factory=lambda: {
+            "NIFTY": UnderlyingCostModel(half_spread_points=0.5, iv_vs_vix=1.0),
+            "BANKNIFTY": UnderlyingCostModel(half_spread_points=1.5, iv_vs_vix=1.15),
+        }
+    )
+    iv_sensitivity: tuple[float, ...] = (0.8, 1.0, 1.2)
+    forward_window_min: PosInt = 60  # for MFE/MAE "signal quality" window
+    execution_broker: Literal["flattrade", "fyers"] = "flattrade"
+    bootstrap_samples: PosInt = 2000
+    grid_rvol: tuple[float, ...] = (1.5, 2.0, 2.5)
+    grid_tol: tuple[float, ...] = (0.15, 0.25, 0.4)
+    grid_min_range_atr: tuple[float, ...] = (0.6, 0.8, 1.0)
+    grid_pdh_buffer: tuple[float, ...] = (0.1, 0.25, 0.5)
+
+
 class DatabaseConfig(_Strict):
     url: str = "sqlite:///data/platform.db"
     sqlite_busy_timeout_ms: PosInt = 5000
@@ -324,6 +359,7 @@ class PlatformConfig(_Strict):
     recorder: RecorderConfig = RecorderConfig()
     database: DatabaseConfig = DatabaseConfig()
     dashboard: DashboardConfig = DashboardConfig()
+    research: ResearchConfig = ResearchConfig()
     strategies: tuple[StrategyEntry, ...] = ()
 
     @model_validator(mode="after")

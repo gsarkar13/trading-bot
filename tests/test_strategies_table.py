@@ -7,11 +7,13 @@ from pydantic import BaseModel
 
 from app.config.schema import PdhPdlParams
 from app.core.types import CodeStatus, Segment, StrategyStage
+from app.data.bars import Bar
 from app.strategies import registry
 from app.strategies.base import (
     DataNeeds,
     ExitDecision,
     MarketView,
+    OpenPosition,
     Signal,
     StrategyPlugin,
     WarmupRequirement,
@@ -67,7 +69,7 @@ class _Dummy(StrategyPlugin):
             )
         ]
 
-    def exit_logic(self, position: dict[str, object], view: MarketView) -> ExitDecision:
+    def exit_logic(self, position: OpenPosition, view: MarketView) -> ExitDecision:
         return ExitDecision(action="HOLD")
 
 
@@ -78,9 +80,9 @@ def test_registering_a_plugin_makes_it_implemented(monkeypatch: pytest.MonkeyPat
     assert registry.code_status("pdh_pdl_breakout") is CodeStatus.IMPLEMENTED
     assert registry.can_activate("pdh_pdl_breakout") == (True, "ok")
     plugin = _Dummy(PdhPdlParams(), config_hash="abcd1234abcd1234")
-    sig = plugin.on_candle(
-        "1m", MarketView(underlying="NIFTY", now=dt.datetime(2026, 11, 27, tzinfo=dt.UTC), data={})
-    )[0]
+    now = dt.datetime(2026, 11, 27, 4, 0, tzinfo=dt.UTC)
+    b = Bar(now - dt.timedelta(minutes=1), 1, 1, 1, 1)
+    sig = plugin.on_candle("1m", MarketView(underlying="NIFTY", now=now, bar=b))[0]
     assert sig.config_hash == plugin.config_hash  # every signal carries its config hash
 
 

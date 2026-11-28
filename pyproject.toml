@@ -9,6 +9,8 @@ dependencies = [
     "sqlalchemy>=2.0.36,<3",
     "alembic>=1.14,<2",
     "pyyaml>=6.0,<7",
+    "fyers-apiv3>=3.3,<4",
+    "cryptography>=43",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +20,7 @@ dev = [
     "pytest>=8.3",
     "hypothesis>=6.120",
     "types-PyYAML",
+    "pandas>=2.2",  # golden tests only; never imported by engine/recorder (P7)
 ]
 
 [build-system]
@@ -36,7 +39,8 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "DTZ"]
 ignore = ["S101"]  # assert is fine in tests
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S105", "S106"]
+"tests/**" = ["S105", "S106", "S311"]
+"app/research/stats.py" = ["S311"]  # bootstrap resampling, not cryptography
 "alembic/**" = ["E501"]
 
 [tool.mypy]
@@ -44,6 +48,10 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["app"]
+
+[[tool.mypy.overrides]]
+module = ["fyers_apiv3", "fyers_apiv3.*"]  # official SDK ships no type hints
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
