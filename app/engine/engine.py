@@ -160,6 +160,7 @@ class LivePos:
     opened_at: dt.datetime
     product: Product = Product.MIS
     exit_sent: bool = False
+    overrides: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def long(self) -> bool:
@@ -213,6 +214,7 @@ class TradingEngine:
         self.quote_fetch, self.subscribe = quote_fetch, subscribe
         self.health = health or Health()
         self.on_signal = on_signal  # AI advisory side channel: fire and forget (inv 9)
+        self.ceiling: Mode = cfg.modes.global_ceiling  # lowered/raised at runtime, <= config
         self.iid = cfg.instance.instance_id
         self.state = EngineState()
         self.store = DbOrderStore(db, now)
@@ -743,7 +745,7 @@ class TradingEngine:
         res = resolve_mode(
             ModeInputs(
                 requested=req,
-                ceiling=self.cfg.modes.global_ceiling,
+                ceiling=self.ceiling,
                 allow_semi=slot.entry.allow_semi,
                 gate=gate,
                 armed_today=self.arming.is_armed(now),
@@ -926,6 +928,89 @@ class TradingEngine:
             p.exit_sent = True
         return n
 
+    def adjust_stop(self, uid: str, action: str, by: str) -> float:
+        """Dashboard / Telegram stop buttons: "cost", "trail", "+5", "-5" (index points).
+        A manual change is a rule override: logged and counted in the compliance score.
+        A stop is never moved away from the price (that would add risk)."""
+        p = self.positions.get(uid)
+        if p is None or p.exit_sent:
+            raise ValueError("no open position with that id")
+        spot = self.spot.get(p.signal.underlying)
+        sign = 1 if p.long else -1
+        if action == "cost":
+            new = p.entry_underlying
+        elif action == "trail":
+            if spot is None:
+                raise ValueError("no live price to trail from")
+            new = spot - sign * p.initial_risk
+        elif action in ("+5", "-5"):
+            new = p.stop + (5 if action == "+5" else -5)
+        else:
+            raise ValueError(f"unknown stop action {action}")
+        tighter = (new > p.stop) if p.long else (new < p.stop)
+        if not tighter:
+            raise ValueError(f"refused: {new:.2f} would move the stop away from the price")
+        if spot is not None and ((p.long and new >= spot) or (not p.long and new <= spot)):
+            raise ValueError("refused: the stop would be through the current price")
+        old, p.stop = p.stop, new
+        p.overrides.append(
+            {
+                "at": self.now().isoformat(),
+                "by": by,
+                "what": f"stop {action}",
+                "from": old,
+                "to": new,
+            }
+        )
+        self.alerts.emit(
+            "warn",
+            "RISK",
+            f"{p.book} {p.slot.id}: stop {old:.2f} -> {new:.2f} "
+            f"({action}, by {by}) - rule override",
+        )
+        return new
+
+    def set_ceiling(self, mode: Mode, by: str) -> None:
+        """The dashboard's global mode switch. It can never go above the configured
+        ceiling, and a real-money ceiling needs a strategy whose gate has passed."""
+        if mode.rank > self.cfg.modes.global_ceiling.rank:
+            raise ValueError(
+                f"config ceiling is {self.cfg.modes.global_ceiling.value}; raise it in config first"
+            )
+        if mode.is_real_money:
+            with Session(self.db) as s:
+                passed = s.scalar(
+                    select(StrategyRow.id).where(
+                        StrategyRow.gate_status.in_(("passed", "overridden"))
+                    )
+                )
+            if passed is None:
+                raise ValueError("no strategy has passed its gate: real money stays off")
+        self.ceiling = mode
+        self.alerts.emit("warn", "RISK", f"global mode ceiling set to {mode.value} by {by}")
+
+    def arming_summary(self) -> dict[str, object]:
+        """What the trader sees before arming real money (section 12 step 5)."""
+        with Session(self.db) as s:
+            strategies = {
+                r.id: {"active": r.active, "requested": r.requested_mode, "gate": r.gate_status}
+                for r in s.scalars(select(StrategyRow))
+            }
+        return {
+            "host": self.cfg.instance.host_label,
+            "role": self.cfg.instance.instance_role.value,
+            "static_ip_ok": self.health.static_ip_ok,
+            "ceiling": self.ceiling.value,
+            "strategies": strategies,
+            "breakers": {
+                b: self._breakers(b).check(self.now(), self._unrealized(b)).reasons
+                for b in ("PAPER", "REAL")
+            },
+        }
+
+    def pause(self, by: str) -> None:
+        self._halt(f"paused by {by}")
+
     def _halt(self, why: str) -> None:
         if self.state.halted is None:
             self.state.halted = why
@@ -943,7 +1028,7 @@ class TradingEngine:
                 p = self.positions.pop(m.position_uid, None)
                 book = p.book if p else self.store.meta[m.position_uid].book
                 broker = self.cfg.research.execution_broker
-                t = self.store.record_trade(m, self.charges, broker, [])
+                t = self.store.record_trade(m, self.charges, broker, p.overrides if p else [])
                 if t is None:
                     continue
                 self._breakers(book).record_close(now, t.net_pnl)

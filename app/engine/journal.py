@@ -77,3 +77,40 @@ def write_journal(engine: Engine, day: dt.date, notes: str | None = None) -> dic
             row.trader_notes = notes
         s.commit()
     return stats
+
+
+def book_stats(engine: Engine, since: dt.date | None = None) -> list[dict[str, object]]:
+    """Per book, after charges: trades, win rate, expectancy, profit factor, max drawdown
+    (section 16.3). Shadow books sit next to the PDH/PDL baseline's shadow book."""
+    q = select(Trade).order_by(Trade.exit_at)
+    if since is not None:
+        q = q.where(Trade.exit_at >= _bounds(since)[0])
+    with Session(engine) as s:
+        trades = list(s.scalars(q))
+    by: dict[str, list[Trade]] = defaultdict(list)
+    for t in trades:
+        by[t.book].append(t)
+    out = []
+    for book, ts in sorted(by.items()):
+        pnl = [t.net_pnl for t in ts]
+        wins = [x for x in pnl if x > 0]
+        losses = [x for x in pnl if x <= 0]
+        eq = peak = dd = Decimal(0)
+        for x in pnl:
+            eq += x
+            peak = max(peak, eq)
+            dd = max(dd, peak - eq)
+        gl = -sum(losses, Decimal(0))
+        out.append(
+            {
+                "book": book,
+                "trades": len(ts),
+                "win_rate": round(len(wins) / len(ts), 3),
+                "expectancy": str((sum(pnl, Decimal(0)) / len(ts)).quantize(Decimal("0.01"))),
+                "profit_factor": None if gl == 0 else round(float(sum(wins, Decimal(0)) / gl), 2),
+                "max_drawdown": str(dd),
+                "net_pnl": str(sum(pnl, Decimal(0))),
+                "charges": str(sum((t.charges_total for t in ts), Decimal(0))),
+            }
+        )
+    return out
